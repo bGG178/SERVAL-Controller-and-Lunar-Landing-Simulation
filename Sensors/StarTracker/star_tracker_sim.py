@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 import time
 
-from StarTracker.gaia_catalog import load_gaia_region
-from StarTracker.constellations import (
+from Sensors.StarTracker.gaia_catalog import load_gaia_region
+from Sensors.StarTracker.constellations import (
     BIG_DIPPER_STARS,
     BIG_DIPPER_LINES,
     get_constellation_vectors
@@ -98,6 +98,7 @@ def generate_startracker_view(
     # Camera frame
     # -------------------------
     boresight = radec_to_vec(*region_center_coords)
+    print("Boresight within Generate Startracker View: ", boresight)
     up_ref = np.array([0.0, 0.0, 1.0])
 
     if np.abs(np.dot(up_ref, boresight)) > 0.9:
@@ -133,27 +134,46 @@ def generate_startracker_view(
     fov = np.radians(fov_deg)
     scale = (image_size / 2.0) / np.tan(fov / 2.0)
 
-    x, y, z = stars_cam[:, 0], stars_cam[:, 1], stars_cam[:, 2]
+    # Use the camera-frame vectors that were computed earlier
+    x_all, y_all, z_all = stars_cam[:, 0], stars_cam[:, 1], stars_cam[:, 2]
+    flux_all = fluxes
 
-    mask = z > 0
-    x, y, z = x[mask], y[mask], z[mask]
-    f = fluxes[mask]
+    # z>0 filter (in front of camera)
+    mask_z = z_all > 0
+    if not np.any(mask_z):
+        # nothing visible
+        px = np.empty((0,), dtype=np.int32)
+        py = np.empty((0,), dtype=np.int32)
+        f = np.empty((0,), dtype=np.float32)
+        stars_cam_visible = np.empty((0, 3), dtype=np.float32)
+    else:
+        x = x_all[mask_z]
+        y = y_all[mask_z]
+        z = z_all[mask_z]
+        f = flux_all[mask_z]
+        stars_cam_visible = stars_cam[mask_z]
 
-    u = x / z
-    v = y / z
+        u = x / z
+        v = y / z
 
-    px = (image_size / 2.0 + scale * u).astype(np.int32)
-    py = (image_size / 2.0 + scale * v).astype(np.int32)
+        px = (image_size / 2.0 + scale * u).astype(np.int32)
+        py = (image_size / 2.0 + scale * v).astype(np.int32)
 
-    inside = (
-        (px >= 0) & (px < image_size) &
-        (py >= 0) & (py < image_size)
-    )
+        inside = (
+                (px >= 0) & (px < image_size) &
+                (py >= 0) & (py < image_size)
+        )
 
-    px, py, f = px[inside], py[inside], f[inside]
+        px = px[inside]
+        py = py[inside]
+        f = f[inside]
+        stars_cam_visible = stars_cam_visible[inside]
 
-    bright = f > min_flux
-    px, py, f = px[bright], py[bright], f[bright]
+        bright = f > min_flux
+        px = px[bright]
+        py = py[bright]
+        f = f[bright]
+        stars_cam_visible = stars_cam_visible[bright]
 
     # =========================================================
     # ONLY BUILD IMAGE IF REQUESTED
@@ -166,8 +186,8 @@ def generate_startracker_view(
         psf_kernel, psf_r = build_psf(image_size)
         image = np.zeros((image_size, image_size), dtype=np.float32)
 
-        for xpix, ypix, flux in zip(px, py, f):
-            add_star_psf(image, xpix, ypix, flux, psf_kernel, psf_r)
+        for xpix, ypix, flux_val in zip(px, py, f):
+            add_star_psf(image, xpix, ypix, flux_val, psf_kernel, psf_r)
 
         if draw_constellations:
             dipper_vecs = get_constellation_vectors(BIG_DIPPER_STARS)
@@ -189,41 +209,16 @@ def generate_startracker_view(
             dipper_pixels = {k: project(v) for k, v in dipper_cam.items()}
 
     # -------------------------
-    # Plot only if image exists
-    # -------------------------
-    figure = None
-    if return_plot:
-        img = np.log1p(image * 5000)
-        if np.max(img) > 0:
-            img /= np.max(img)
-
-        plt.figure(figsize=(10, 10))
-        plt.imshow(img, origin="lower", cmap="gray")
-
-        if dipper_pixels:
-            for a, b in BIG_DIPPER_LINES:
-                pa = dipper_pixels.get(a)
-                pb = dipper_pixels.get(b)
-                if pa and pb:
-                    plt.plot([pa[0], pb[0]], [pa[1], pb[1]], color="cyan")
-
-        plt.title("Star Tracker Viewport")
-        plt.tight_layout()
-        plt.show()
-
-        figure = plt.gcf()
-
-    # -------------------------
     # Output (always lightweight)
     # -------------------------
     return {
         "pixel_x": px,
         "pixel_y": py,
         "flux": f,
-        "camera_vectors": stars_cam,
+        "camera_vectors": stars_cam_visible.astype(np.float32),
         "fov_deg": fov_deg,
         "scale": scale,
         "dipper_pixels": dipper_pixels,
-        "image": image,          # will be None unless return_plot=True
-        "figure": figure,        # will be None unless return_plot=True
+        "image": image,  # will be None unless return_plot=True
+        #"figure": figure,  # will be None unless return_plot=True
     }

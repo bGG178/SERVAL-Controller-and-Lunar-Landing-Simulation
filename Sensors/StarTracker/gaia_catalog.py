@@ -2,6 +2,7 @@ import numpy as np
 from pathlib import Path
 from astroquery.gaia import Gaia
 from concurrent.futures import ThreadPoolExecutor
+from scipy.spatial import cKDTree
 
 # =========================================================
 # PATHS
@@ -21,6 +22,7 @@ TRI_CACHE_DIR.mkdir(exist_ok=True)
 
 TILE_SIZE = 2.0
 TILE_PADDING = 0.25
+SIGNATURE_VERSION = 2
 
 # =========================================================
 # MEMORY CACHE
@@ -54,20 +56,80 @@ def sky_tile(ra_deg, dec_deg):
     )
 
 # =========================================================
-# TRIANGLE SIGNATURE
+# TRIANGLE SIGNATURE (5D robust descriptor)
 # =========================================================
+
+def angular_distance(a, b):
+    return np.arccos(
+        np.clip(np.dot(a, b), -1.0, 1.0)
+    )
+def verify_fourth_star(
+    obs_tri,
+    obs_fourth,
+    cat_tri,
+    cat_vecs,
+    tol_deg=0.1
+):
+
+    tol = np.radians(tol_deg)
+
+    obs_d = np.array([
+        angular_distance(obs_fourth, obs_tri[0]),
+        angular_distance(obs_fourth, obs_tri[1]),
+        angular_distance(obs_fourth, obs_tri[2]),
+    ])
+
+    matches = []
+
+    best_err = np.inf
+
+    for idx, star in enumerate(cat_vecs):
+
+        cat_d = np.array([
+            angular_distance(star, cat_tri[0]),
+            angular_distance(star, cat_tri[1]),
+            angular_distance(star, cat_tri[2]),
+        ])
+
+        err = np.max(np.abs(obs_d - cat_d))
+
+        best_err = min(best_err, err)
+
+        if err < tol:
+            matches.append(idx)
+
+            if len(matches) > 1:
+                return None
+
+    if len(matches) == 1:
+        return matches[0]
+
+    return None
 
 def triangle_signature(a, b, c):
     def ang(x, y):
         return np.arccos(np.clip(np.dot(x, y), -1.0, 1.0))
 
-    e = np.array([
-        ang(a, b),
-        ang(b, c),
-        ang(c, a)
-    ], dtype=np.float32)
+    d_ab = ang(a, b)
+    d_bc = ang(b, c)
+    d_ca = ang(c, a)
 
-    return np.sort(e)  # ALWAYS (3,)
+    edges = np.array([d_ab, d_bc, d_ca], dtype=np.float32)
+    edges.sort()
+
+    s = edges.sum() + 1e-9
+    norm_edges = edges / s
+
+    ratio1 = edges[0] / (edges[1] + 1e-9)
+    ratio2 = edges[1] / (edges[2] + 1e-9)
+
+    return np.array([
+        norm_edges[0],
+        norm_edges[1],
+        norm_edges[2],
+        ratio1,
+        ratio2
+    ], dtype=np.float32)
 
 # =========================================================
 # TILE COVERAGE
@@ -128,14 +190,13 @@ def query_tile(ra_tile, dec_tile):
     radius = max(ra_max - ra_min, dec_max - dec_min) * 0.75
 
     query = f"""
-    SELECT ra, dec, parallax, phot_g_mean_mag
+    SELECT ra, dec, phot_g_mean_mag
     FROM gaiadr3.gaia_source
     WHERE CONTAINS(
         POINT('ICRS', ra, dec),
         CIRCLE('ICRS', {center_ra}, {center_dec}, {radius})
     ) = 1
     AND phot_g_mean_mag < 21
-    AND parallax > 0
     """
 
     job = Gaia.launch_job_async(query)
@@ -151,30 +212,24 @@ def query_tile(ra_tile, dec_tile):
     fluxes = []
 
     for r in stars:
-        ra, dec = r["ra"], r["dec"]
-        p, mag = r["parallax"], r["phot_g_mean_mag"]
+        ra, dec, mag = r["ra"], r["dec"], r["phot_g_mean_mag"]
 
-        if np.isnan(ra) or np.isnan(dec) or np.isnan(p) or np.isnan(mag):
+        if np.isnan(ra) or np.isnan(dec) or np.isnan(mag):
             continue
 
-        dist = 1000.0 / p
-        if dist > 10000:
-            continue
-
+        # ✅ FIX: PURE DIRECTION ONLY (NO DISTANCE)
         x = np.cos(np.radians(dec)) * np.cos(np.radians(ra))
         y = np.cos(np.radians(dec)) * np.sin(np.radians(ra))
         z = np.sin(np.radians(dec))
 
-        positions.append(np.array([x, y, z]) * dist)
+        positions.append(np.array([x, y, z], dtype=np.float32))
         fluxes.append(10 ** (-0.4 * mag))
 
-    positions = np.array(positions, dtype=np.float64)
-    fluxes = np.array(fluxes, dtype=np.float32)
+    positions = np.asarray(positions, dtype=np.float32)
+    fluxes = np.asarray(fluxes, dtype=np.float32)
 
-    if len(fluxes) > 0:
-        keep = np.argsort(fluxes)[int(len(fluxes) * 0.9):]
-        positions = positions[keep]
-        fluxes = fluxes[keep]
+    # normalize immediately (CRITICAL FIX)
+    positions = positions / (np.linalg.norm(positions, axis=1, keepdims=True) + 1e-9)
 
     np.savez(cache_file, star_positions=positions, fluxes=fluxes)
     _MEMORY_TILE_CACHE[key] = (positions, fluxes)
@@ -184,11 +239,17 @@ def query_tile(ra_tile, dec_tile):
     return positions, fluxes
 
 # =========================================================
-# TRIANGLE CACHE
+# TRIANGLE CACHE BUILD
 # =========================================================
 
-def build_triangle_cache(ra_tile, dec_tile, top_k=32):
+def build_triangle_cache(ra_tile, dec_tile, top_k=8, neighbor_k=8):
+    """
+    Build triangle cache for a tile but limit triangles by nearest neighbors.
 
+    - top_k: number of brightest stars to consider (kept from original API)
+    - neighbor_k: for each star, only consider its nearest neighbor_k neighbors
+                  when forming triangles (neighbor_k should be >= 2)
+    """
     f = tri_cache_filename(ra_tile, dec_tile)
     if f.exists():
         return
@@ -197,30 +258,79 @@ def build_triangle_cache(ra_tile, dec_tile, top_k=32):
     if len(pos) < 3:
         return
 
-    vecs = pos / np.linalg.norm(pos, axis=1, keepdims=True)
+    vecs = pos.astype(np.float32)
 
-    idx = np.argsort(flux)[::-1][:top_k]
-    vecs = vecs[idx]
+    # normalize (already done in query_tile, but keep safe)
+    vecs = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9)
+
+    flux = np.asarray(flux, dtype=np.float32)
+
+    # keep only the brightest stars (reduce N)
+    idx_bright = np.argsort(flux)[::-1][:64]
+    vecs = vecs[idx_bright]
+    flux = flux[idx_bright]
+
+    n = len(vecs)
+    if n < 3:
+        return
+
+    # Build KD-tree for neighbor queries
+    tree = cKDTree(vecs.astype(np.float32))
 
     hashes = []
     ids = []
 
-    n = len(vecs)
+    # For each star, get neighbor_k nearest neighbors (including itself)
+    # and form triangles only among that small neighborhood.
+    # This reduces combinations drastically in dense fields.
+    neighbor_k = min(neighbor_k, n - 1)
+    dists, neighbors = tree.query(vecs, k=neighbor_k + 1)  # +1 includes self
 
     for i in range(n):
-        for j in range(i + 1, n):
-            for k in range(j + 1, n):
+        neigh = neighbors[i]
+        # remove self (first entry)
+        neigh = neigh[neigh != i]
+        # if fewer than 2 neighbors, skip
+        if len(neigh) < 2:
+            continue
 
-                hashes.append(triangle_signature(vecs[i], vecs[j], vecs[k]))
-                ids.append([i, j, k])
+        # form triangles (i, j, k) with j < k to avoid duplicates
+        for a_idx in range(len(neigh)):
+            for b_idx in range(a_idx + 1, len(neigh)):
+                j = neigh[a_idx]
+                k = neigh[b_idx]
+                # ensure deterministic ordering of indices
+                tri_ids = [i, j, k]
+                tri_ids_sorted = sorted(tri_ids)
+                # compute signature
+                sig = triangle_signature(vecs[tri_ids_sorted[0]],
+                                         vecs[tri_ids_sorted[1]],
+                                         vecs[tri_ids_sorted[2]])
+                hashes.append(sig)
+                ids.append(tri_ids_sorted)
 
-    if not hashes:
+    if len(hashes) == 0:
         return
 
-    hashes = np.stack(hashes).astype(np.float32)
-    ids = np.array(ids, dtype=np.int32)
+    hashes = np.asarray(hashes, dtype=np.float32)
+    ids = np.asarray(ids, dtype=np.int32)
 
-    np.savez(f, hashes=hashes, triangle_ids=ids, star_vectors=vecs, fluxes=flux[idx])
+    # optional: deduplicate identical signatures (cheap hash)
+    # create a small hash key from rounded signature to remove duplicates
+    sig_keys = np.round(hashes, 6)
+    _, unique_idx = np.unique(sig_keys, axis=0, return_index=True)
+    hashes = hashes[unique_idx]
+    ids = ids[unique_idx]
+
+    np.savez(
+        f,
+        hashes=hashes,
+        triangle_ids=ids,
+        star_vectors=vecs,
+        fluxes=flux,
+        sig_version=SIGNATURE_VERSION
+    )
+
 
 # =========================================================
 # REGION LOADER
@@ -246,17 +356,44 @@ def load_gaia_region(region_center=(10, 41), radius_deg=3):
     if not pos:
         return np.empty((0, 3)), np.empty((0,))
 
-    return np.concatenate(pos), np.concatenate(flux)
+    pos = np.concatenate(pos)
+    flux = np.concatenate(flux)
+
+    # 🔴 NEW: discard the lowest 90% flux stars to drastically reduce catalog size
+    if len(flux) > 0:
+        # keep only the top 10% brightest stars by flux
+        thresh = np.percentile(flux, 90.0)
+        keep_mask = flux >= thresh
+        pos = pos[keep_mask]
+        flux = flux[keep_mask]
+
+    # 🔴 FIX: REMOVE DUPLICATES FROM TILE OVERLAP
+    # (prevents triangle corruption)
+    if len(pos) > 0:
+        _, unique_idx = np.unique(pos.round(6), axis=0, return_index=True)
+        pos = pos[unique_idx]
+        flux = flux[unique_idx]
+
+    return pos, flux
+
 
 # =========================================================
 # TRIANGLE REGION LOADER
 # =========================================================
 
 def load_triangle_region(region_center=(10, 41), radius_deg=3):
+
+    ra0, dec0 = region_center
+    rad = np.radians(radius_deg)
+
+    # Load tiles as before
     tiles = required_tiles(region_center, radius_deg)
 
     hashes_all = []
     ids_all = []
+    vecs_all = []
+
+    offset = 0
 
     for r, d in tiles:
         file = tri_cache_filename(r, d)
@@ -269,17 +406,73 @@ def load_triangle_region(region_center=(10, 41), radius_deg=3):
 
         data = np.load(file)
 
-        # ✅ FORCE SHAPE CONSISTENCY HERE
-        hashes_all.append(np.asarray(data["hashes"]).reshape(-1, 3))
-        ids_all.append(np.asarray(data["triangle_ids"]))
+        if "sig_version" in data and int(data["sig_version"]) != SIGNATURE_VERSION:
+            continue
+
+        hashes = np.asarray(data["hashes"], dtype=np.float32).reshape(-1, 5)
+        tri_ids = np.asarray(data["triangle_ids"], dtype=np.int32).reshape(-1, 3)
+        vecs = np.asarray(data["star_vectors"], dtype=np.float32).reshape(-1, 3)
+
+        if len(hashes) == 0:
+            continue
+
+        # =========================================================
+        # 🔥 FILTER TRIANGLE STARS TO MATCH GAIA REGION EXACTLY
+        # =========================================================
+        # Convert region center to vector
+        center_vec = np.array([
+            np.cos(np.radians(dec0)) * np.cos(np.radians(ra0)),
+            np.cos(np.radians(dec0)) * np.sin(np.radians(ra0)),
+            np.sin(np.radians(dec0))
+        ], dtype=np.float32)
+
+        # Angular distance filter
+        dots = np.clip(vecs @ center_vec, -1.0, 1.0)
+        ang = np.arccos(dots)
+
+        mask = ang <= rad
+        if not np.any(mask):
+            continue
+
+        # Filter vectors
+        vecs = vecs[mask]
+
+        # Filter triangle IDs and hashes accordingly
+        # (only keep triangles whose all 3 stars survive)
+        keep = []
+        for i, tri in enumerate(tri_ids):
+            if mask[tri[0]] and mask[tri[1]] and mask[tri[2]]:
+                keep.append(i)
+
+        if not keep:
+            continue
+
+        hashes = hashes[keep]
+        tri_ids = tri_ids[keep]
+
+        # Reindex triangle IDs after filtering
+        remap = np.cumsum(mask) - 1
+        tri_ids = remap[tri_ids]
+
+        # Append
+        ids_all.append(tri_ids + offset)
+        hashes_all.append(hashes)
+        vecs_all.append(vecs)
+
+        offset += vecs.shape[0]
 
     if not hashes_all:
-        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.int32)
+        return (
+            np.empty((0, 5), dtype=np.float32),
+            np.empty((0, 3), dtype=np.int32),
+            np.empty((0, 3), dtype=np.float32),
+            None
+        )
 
     hashes = np.concatenate(hashes_all, axis=0)
     ids = np.concatenate(ids_all, axis=0)
+    vecs = np.concatenate(vecs_all, axis=0)
 
-    # safety check
-    assert hashes.ndim == 2 and hashes.shape[1] == 3, hashes.shape
+    tree = cKDTree(hashes)
 
-    return hashes, ids
+    return hashes, ids, vecs, tree

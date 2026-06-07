@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 
-from gaia_catalog import load_gaia_database
+from Sensors.StarTracker.gaia_catalog import load_gaia_database
 
 
 # -----------------------------
