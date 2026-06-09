@@ -522,7 +522,40 @@ def match_triangles(
             cat_tri_ids = cat_ids[i_cat]
             cat_tri = cat_vecs[cat_tri_ids]
 
-            rot = fast_kabsch(cam_tri, cat_tri)
+            # -----------------------------
+            # 4th STAR VERIFICATION
+            # -----------------------------
+            # pick a 4th camera star (brightest not in triangle)
+            fourth_idx = None
+            for idx4 in range(len(cam_sel)):
+                if idx4 not in cam_ids:
+                    fourth_idx = idx4
+                    break
+
+            if fourth_idx is None:
+                continue
+
+            obs_fourth = cam_sel[fourth_idx]
+
+            # verify against catalog
+            cat_fourth_idx = verify_fourth_star(
+                cam_tri,
+                obs_fourth,
+                cat_tri,
+                cat_sel,
+                tol_deg=0.15  # slightly loose tolerance
+            )
+
+            if cat_fourth_idx is None:
+                # reject this triangle match
+                continue
+
+            # build full 4‑star correspondence
+            cam_quad = np.vstack([cam_tri, obs_fourth])
+            cat_quad = np.vstack([cat_tri, cat_sel[cat_fourth_idx]])
+
+            # now solve rotation using 4 stars
+            rot = fast_kabsch(cam_quad, cat_quad)
 
             # quick sanity: avoid flipped solutions with negative mean dot
             cam_mapped = rot.apply(cam_tri)
@@ -629,41 +662,40 @@ def match_triangles(
 
     return refined, score, cat_vecs, mask, best_cam_tri, cam_sel, cat_tri_best
 
-
-def match_triangles_direct(cam_vecs, cam_flux, cat_vecs, cat_flux, region_center, radius_deg):
+def match_triangles_direct(cam_vecs, cam_flux, cat_vecs, cat_flux,
+                           region_center=None, radius_deg=None):
     """
-    Triangle-based attitude solve using the EXACT same catalog
-    that the simulator used (no tiles, no caches).
+    Triangle-based attitude solve using the SAME catalog the simulator used,
+    with region gating and a boresight-prior rejection.
     """
-
-    # Convert region center to unit vector
-    ra, dec = np.radians(region_center[0]), np.radians(region_center[1])
-    center_vec = np.array([
-        np.cos(dec) * np.cos(ra),
-        np.cos(dec) * np.sin(ra),
-        np.sin(dec)
-    ])
-
-    # Angular radius in radians
-    rad = np.radians(radius_deg)
-
-    # Filter catalog to stars within radius_deg of region center
-    dots = np.clip(cat_vecs @ center_vec, -1.0, 1.0)
-    ang = np.arccos(dots)
-    mask = ang <= rad
-
-    cat_vecs = cat_vecs[mask]
-    cat_flux = cat_flux[mask]
-
-    print(f"[CAT REGION FILTER] kept {len(cat_vecs)} stars out of {len(mask)}")
-
     cam_vecs = normalize(cam_vecs)
     cat_vecs = normalize(cat_vecs)
 
-    # Build camera triangles
-    cam_triangles, cam_sel = build_triangles(cam_vecs, cam_flux)
+    # ----------------------------------------
+    # Optional region gating on catalog
+    # ----------------------------------------
+    if region_center is not None and radius_deg is not None:
+        ra, dec = np.radians(region_center[0]), np.radians(region_center[1])
+        center_vec = np.array([
+            np.cos(dec) * np.cos(ra),
+            np.cos(dec) * np.sin(ra),
+            np.sin(dec)
+        ], dtype=np.float64)
+        rad = np.radians(radius_deg)
 
-    # Build catalog triangles with same logic
+        dots = np.clip(cat_vecs @ center_vec, -1.0, 1.0)
+        ang = np.arccos(dots)
+        mask = ang <= rad
+
+        cat_vecs = cat_vecs[mask]
+        cat_flux = cat_flux[mask]
+
+        print(f"[CAT REGION FILTER] kept {len(cat_vecs)} stars out of {len(mask)}")
+
+    # ----------------------------------------
+    # Build triangles
+    # ----------------------------------------
+    cam_triangles, cam_sel = build_triangles(cam_vecs, cam_flux)
     cat_triangles, cat_sel = build_triangles(cat_vecs, cat_flux)
 
     if len(cam_triangles) == 0 or len(cat_triangles) == 0:
@@ -674,11 +706,28 @@ def match_triangles_direct(cam_vecs, cam_flux, cat_vecs, cat_flux, region_center
     cat_sigs /= (np.linalg.norm(cat_sigs, axis=1, keepdims=True) + 1e-9)
     hash_tree = cKDTree(cat_sigs)
 
+    # KD-tree on catalog stars for scoring
+    cat_tree = cKDTree(cat_vecs.astype(np.float32))
+
+    # true boresight from region_center (for prior)
+    if region_center is not None:
+        ra0, dec0 = np.radians(region_center[0]), np.radians(region_center[1])
+        true_boresight = np.array([
+            np.cos(dec0) * np.cos(ra0),
+            np.cos(dec0) * np.sin(ra0),
+            np.sin(dec0)
+        ], dtype=np.float64)
+    else:
+        true_boresight = None
+
     rot_votes = []
     scores = []
     tri_for_rot = []
 
-    for sig, tri in cam_triangles:
+    # ----------------------------------------
+    # First triangle → candidate rotations
+    # ----------------------------------------
+    for (sig, tri) in cam_triangles:
         sig_n = sig / (np.linalg.norm(sig) + 1e-9)
         dists, idx = hash_tree.query(sig_n, k=10)
         idx = np.atleast_1d(idx)
@@ -690,11 +739,49 @@ def match_triangles_direct(cam_vecs, cam_flux, cat_vecs, cat_flux, region_center
             cat_ids = list(cat_triangles[i_cat][1])
             cat_tri = cat_sel[cat_ids]
 
+            # ----------------------------------------
+            # BRIGHTNESS ORDERING CHECK
+            # ----------------------------------------
+            # Sort camera triangle vertices by brightness (flux)
+            cam_flux_tri = cam_flux[cam_ids]
+            cam_order = np.argsort(-cam_flux_tri)  # brightest first
+            cam_tri_sorted = cam_tri[cam_order]
+
+            # Sort catalog triangle vertices by brightness
+            cat_flux_tri = cat_flux[cat_ids]
+            cat_order = np.argsort(-cat_flux_tri)
+            cat_tri_sorted = cat_tri[cat_order]
+
+            # If brightness ordering differs, reject this match
+            if not np.array_equal(cam_order, cat_order):
+                continue
+
+            # Use brightness‑sorted triangles for Kabsch
+            cam_tri = cam_tri_sorted
+            cat_tri = cat_tri_sorted
+
+            # initial rotation from this triangle
             rot = fast_kabsch(cam_tri, cat_tri)
 
-            # score over all camera stars
+            #rot = R.from_matrix(rot.as_matrix().T)
+
+            # ----------------------------------------
+            # BORESIGHT PRIOR REJECTION
+            # ----------------------------------------
+            if true_boresight is not None:
+                b_cam = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+                b_est = rot.apply(b_cam)
+                dot_b = np.clip(np.dot(b_est, true_boresight), -1.0, 1.0)
+                err_b_deg = np.degrees(np.arccos(dot_b))
+
+                # reject candidates whose boresight is too far from prior
+                if err_b_deg > 2.0:   # you can tune this threshold
+                    continue
+
+            # ----------------------------------------
+            # Score rotation over all camera stars
+            # ----------------------------------------
             cam_in_cat = rot.apply(cam_vecs)
-            cat_tree = cKDTree(cat_vecs.astype(np.float32))
             dists_all, nn = cat_tree.query(cam_in_cat, k=1)
             theta = chord_to_angle(dists_all)
             score = np.sum(theta < np.radians(0.1))
@@ -704,15 +791,17 @@ def match_triangles_direct(cam_vecs, cam_flux, cat_vecs, cat_flux, region_center
             tri_for_rot.append(tri)
 
     if not scores:
-        raise RuntimeError("No pyramid solution (no valid scores)")
+        raise RuntimeError("No pyramid solution (no valid scores after boresight prior)")
 
+    # ----------------------------------------
+    # Pick best rotation
+    # ----------------------------------------
     best_idx = int(np.argmax(scores))
     best_rot = rot_votes[best_idx]
     best_cam_tri = tri_for_rot[best_idx]
 
     # final inlier mask
     cam_in_cat = best_rot.apply(cam_vecs)
-    cat_tree = cKDTree(cat_vecs.astype(np.float32))
     dists, nn = cat_tree.query(cam_in_cat, k=1)
     nn_vecs = cat_vecs[nn]
     dots = np.clip(np.sum(cam_in_cat * nn_vecs, axis=1), -1.0, 1.0)
@@ -723,7 +812,6 @@ def match_triangles_direct(cam_vecs, cam_flux, cat_vecs, cat_flux, region_center
     score = int(np.sum(mask))
 
     return refined, score, cat_vecs, mask, best_cam_tri, cam_sel
-
 
 # =========================================================
 # MAIN PIPELINE
@@ -776,11 +864,13 @@ def process_star_tracker_output(
         cam_flux,
         cat_all,
         cat_flux,
-        region_center,
-        radius_deg
+        region_center=region_center,
+        radius_deg=radius_deg
     )
 
     rot = refine_solution(rot, cam_vecs, cat_all)
+
+
 
     # ----------------------------------------------------
     # Ground-truth direction from region_center (boresight only)
@@ -917,8 +1007,35 @@ def process_star_tracker_output(
             ax_true.set_ylabel("DEC (deg)")
             ax_true.legend()
 
+            # ---------------------------------------------
+            # Draw the winning triangle on the TRUE sky
+            # ---------------------------------------------
+            i, j, k = best_cam_tri  # same triangle indices
+
+            # Transform the triangle vertices using TRUE rotation
+            cam_sel_true = true_rot.apply(cam_sel)
+
+            tri_true_ra = np.degrees(np.arctan2(
+                cam_sel_true[[i, j, k, i], 1],
+                cam_sel_true[[i, j, k, i], 0]
+            )) % 360.0
+
+            tri_true_dec = np.degrees(np.arcsin(
+                cam_sel_true[[i, j, k, i], 2]
+            ))
+
+            ax_true.plot(
+                tri_true_ra,
+                tri_true_dec,
+                color="red",
+                linewidth=1.5,
+                label="Winning triangle (true)"
+            )
+
         plt.tight_layout()
         plt.show()
+
+
 
     if true_rot is not None:
         rel = true_rot * rot.inv()

@@ -266,7 +266,7 @@ def build_triangle_cache(ra_tile, dec_tile, top_k=8, neighbor_k=12):
     flux = np.asarray(flux, dtype=np.float32)
 
     # keep only the brightest stars (reduce N)
-    idx_bright = np.argsort(flux)[::-1][:128]
+    idx_bright = np.argsort(flux)[::-1][:50]
     vecs = vecs[idx_bright]
     flux = flux[idx_bright]
 

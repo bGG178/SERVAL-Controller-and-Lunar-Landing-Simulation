@@ -9,7 +9,7 @@ import time
 # TEST TARGET
 # ==========================================
 
-input_area = (180.0, 54.0)
+input_area = (180.0, 51.0)
 
 data = generate_startracker_view(
     return_plot=False,
