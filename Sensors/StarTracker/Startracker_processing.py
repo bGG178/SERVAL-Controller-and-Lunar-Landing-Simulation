@@ -1,24 +1,26 @@
 import numpy as np
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
+import matplotlib.pyplot as plt
 
 from Sensors.StarTracker.gaia_catalog import (
     load_triangle_region,
-    verify_fourth_star
+    verify_fourth_star,
+    load_gaia_region
 )
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-TOP_K_STARS = 8
+TOP_K_STARS = 20
 MAX_TRIANGLES = 45
 TRIANGLE_K_NEIGHBORS = 2
 
-MIN_TRIANGLE_ANGLE_DEG = 2.0
+MIN_TRIANGLE_ANGLE_DEG = 4.0
 MAX_TRIANGLE_ANGLE_DEG = 80.0
 
-INLIER_THRESHOLD_DEG = 0.05
+INLIER_THRESHOLD_DEG = 0.02
 FAST_VERIFY_STARS = 1000
 
 
@@ -26,25 +28,12 @@ FAST_VERIFY_STARS = 1000
 # CACHE
 # =========================================================
 
+# Helper: convert chord distance (||u-v|| on unit sphere) to angular separation (radians)
+def chord_to_angle(d):
+    return 2.0 * np.arcsin(np.clip(d / 2.0, -1.0, 1.0))
+
+
 _catalog_tree_cache = {}
-
-def _vecs_hash(vecs):
-    # stable hash for caching; use a small digest of the bytes
-    try:
-        h = hash(vecs.tobytes())
-    except Exception:
-        # fallback to shape-based key if tobytes fails
-        h = (vecs.shape, float(np.mean(vecs)))
-    return h
-
-def get_catalog_tree(vecs):
-    key = _vecs_hash(vecs)
-    if key not in _catalog_tree_cache:
-        print("[CAT TREE] Building new KDTree for catalog vectors, N =", len(vecs))
-        _catalog_tree_cache[key] = cKDTree(vecs.astype(np.float32))
-    else:
-        print("[CAT TREE] Reusing cached KDTree for catalog vectors, N =", len(vecs))
-    return _catalog_tree_cache[key]
 
 
 
@@ -111,22 +100,47 @@ def triangle_signature(a, b, c):
 # =========================================================
 # INLIER SCORING
 # =========================================================
+def count_inliers(rot_ci, cam_vecs, cat_vecs, ang_thresh_deg=0.1):
+    """
+    Count inliers by mapping camera vectors into catalog frame and
+    comparing angular separation to nearest catalog neighbor.
 
-def count_inliers(rot_ci, cam_vecs, cat_vecs):
+    Returns integer count of inliers.
+    """
+    cam_vecs = normalize(np.asarray(cam_vecs, dtype=np.float64))
+    cat_vecs = normalize(np.asarray(cat_vecs, dtype=np.float64))
+
+    if len(cam_vecs) == 0 or len(cat_vecs) == 0:
+        return 0
+
     cam_inertial = rot_ci.apply(cam_vecs)
 
-    cat_tree = cKDTree(cat_vecs)
+    print("[COUNT_INLIERS] sample cam_vecs (first 5):", cam_vecs[:5])
+    print("cam_inertial (first 5):", cam_inertial[:5])
+    # sample dot with matched nn
+    print("cat_vecs (first 5):", cat_vecs[:5])
+
+
+    # nearest neighbor search
+    cat_tree = cKDTree(cat_vecs.astype(np.float32))
     dists, nn = cat_tree.query(cam_inertial, k=1)
 
-    ang_thresh = np.radians(0.1)
-    inliers = dists < ang_thresh
+    # convert nearest neighbor vectors to angles using dot product
+    nn_vecs = cat_vecs[nn]
+    dots = np.clip(np.sum(cam_inertial * nn_vecs, axis=1), -1.0, 1.0)
+    ang = np.arccos(dots)
+
+    ang_thresh = np.radians(ang_thresh_deg)
+    inliers = ang < ang_thresh
 
     print("\n[INLIER DEBUG FIXED]")
-    print("total matches :", np.sum(inliers))
-    print("mean error deg:", np.degrees(np.mean(dists)))
-    print("max error deg :", np.degrees(np.max(dists)))
+    print("total matches :", int(np.sum(inliers)))
+    if len(ang) > 0:
+        print("mean error deg:", float(np.degrees(np.mean(ang))))
+        print("max error deg :", float(np.degrees(np.max(ang))))
 
     return int(np.sum(inliers))
+
 
 
 # =========================================================
@@ -201,24 +215,62 @@ def build_triangles(vecs, flux):
 # ATTITUDE SOLVE
 # =========================================================
 def fast_kabsch(A, B):
-    H = A.T @ B
-    U, _, Vt = np.linalg.svd(H, full_matrices=False)
+    """
+    Compute the orthogonal rotation that best maps A -> B using the
+    classic Kabsch algorithm. A and B must be Nx3 arrays of corresponding
+    points (unit vectors recommended). Returns a scipy Rotation object
+    with attached quality diagnostics in rot._kabsch_quality.
+    """
+    A = np.asarray(A, dtype=np.float64)
+    B = np.asarray(B, dtype=np.float64)
 
+    print("[FAST_KABSCH INPUT] A.shape, B.shape:", A.shape, B.shape)
+    dots = np.sum(A * B, axis=1)
+    print("[FAST_KABSCH INPUT] A·B (first 10):", dots[:10])
+
+    print("[FAST_KABSCH INPUTS]")
+    print("A (first 3):", A[:3])
+    print("B (first 3):", B[:3])
+    # check pairwise dot products to detect near-opposite correspondences
+    dots = np.sum(A * B, axis=1)
+    print("A·B dots (first 10):", dots[:10])
+    print("A norms (first 10):", np.linalg.norm(A, axis=1)[:10])
+    print("B norms (first 10):", np.linalg.norm(B, axis=1)[:10])
+
+
+
+    # For unit direction vectors, do not subtract means
+    H = A.T @ B
+
+    U, S, Vt = np.linalg.svd(H, full_matrices=False)
     Rmat = Vt.T @ U.T
 
+    # ensure right-handed rotation
     if np.linalg.det(Rmat) < 0:
         Vt[-1, :] *= -1
         Rmat = Vt.T @ U.T
 
-    # orthogonality check
+    # orthogonality diagnostics
     ortho_err = np.linalg.norm(Rmat.T @ Rmat - np.eye(3))
-    detR = np.linalg.det(Rmat)
+    detR = float(np.linalg.det(Rmat))
 
     rot = R.from_matrix(Rmat)
 
+    # residuals in Euclidean chord space
     A_rot = rot.apply(A)
     residuals = np.linalg.norm(A_rot - B, axis=1)
 
+    # attach diagnostics
+    rot._kabsch_quality = {
+        "ortho_err": float(ortho_err),
+        "det": detR,
+        "residual_mean": float(np.mean(residuals)),
+        "residual_median": float(np.median(residuals)),
+        "residual_max": float(np.max(residuals)),
+        "singular_values": S.tolist() if S is not None else None
+    }
+
+    # debug print (kept for parity with previous behavior)
     print("\n[FAST_KABSCH DEBUG]")
     print("A shape:", A.shape, "B shape:", B.shape)
     print("det(R):", detR)
@@ -227,16 +279,8 @@ def fast_kabsch(A, B):
           "max =", float(np.max(residuals)),
           "mean =", float(np.mean(residuals)))
 
-    # If orthogonality error is large or residuals are huge, warn and continue,
-    # but mark the rotation as potentially bad by attaching an attribute.
-    rot._kabsch_quality = {
-        "ortho_err": float(ortho_err),
-        "det": float(detR),
-        "residual_mean": float(np.mean(residuals)),
-        "residual_max": float(np.max(residuals))
-    }
-
     return rot
+
 
 
 
@@ -253,38 +297,118 @@ def solve_attitude(cam_vecs, cat_vecs):
 # =========================================================
 # REFINEMENT
 # =========================================================
+from scipy.optimize import least_squares
+def refine_solution(rot_ci, cam_vecs, cat_vecs, cam_flux=None):
+    """
+    Robust nonlinear angular refinement of rotation rot_ci using matched pairs.
+    - Uses least_squares with a soft L1 loss and optional flux weights.
+    - Returns a Rotation object. Falls back to rot_ci if refinement fails or
+      makes the solution worse.
+    """
+    cam_vecs = normalize(np.asarray(cam_vecs, dtype=np.float64))
+    cat_vecs = normalize(np.asarray(cat_vecs, dtype=np.float64))
 
-def refine_solution(rot_ci, cam_vecs, cat_vecs):
-    cam_vecs = normalize(cam_vecs)
-    cat_vecs = normalize(cat_vecs)
-
-    cat_in_cam = rot_ci.inv().apply(cat_vecs)
-    tree = cKDTree(cat_in_cam)
-
-    dists, idx = tree.query(cam_vecs, k=1)
-    mask = dists < 0.01
-
-    print("\n[REFINE DEBUG]")
-    print("Refine inliers:", np.sum(mask))
-    print("Refine distance stats: min =", float(np.min(dists)),
-          "max =", float(np.max(dists)),
-          "mean =", float(np.mean(dists)))
-
-    if np.sum(mask) < 6:
-        print("Not enough refine inliers, returning original rotation.")
+    if len(cam_vecs) < 6 or len(cat_vecs) < 6:
         return rot_ci
 
-    refined = fast_kabsch(
-        cam_vecs[mask],
-        cat_vecs[idx[mask]]
-    )
+    # map catalog into camera frame using inverse of rot_ci
+    cat_in_cam = rot_ci.inv().apply(cat_vecs)
+    tree = cKDTree(cat_in_cam.astype(np.float32))
 
-    return refined
+    # find nearest catalog neighbor for each camera vector
+    dists, idx = tree.query(cam_vecs, k=1)
+    nn = cat_vecs[idx]
+
+    # compute angular distances via dot product
+    dots = np.clip(np.sum(rot_ci.apply(cam_vecs) * nn, axis=1), -1.0, 1.0)
+    ang = np.arccos(dots)
+
+    # prefilter: keep pairs within a loose threshold for refinement
+    prefilter_thresh = np.radians(1.0)  # 1 degree initial prefilter
+    mask = ang < prefilter_thresh
+
+    print("[REFINE PREFILTER] prefilter_thresh_deg:", np.degrees(prefilter_thresh))
+    print("[REFINE PREFILTER] total pairs:", len(ang), "kept:", int(np.sum(mask)))
+    if np.sum(mask) > 0:
+        A = cam_vecs[mask]
+        B = nn[mask]
+        print("[REFINE PREFILTER] A (first 5):", A[:5])
+        print("[REFINE PREFILTER] B (first 5):", B[:5])
+        print("[REFINE PREFILTER] ang_kept_deg (first 10):", np.degrees(ang[mask])[:10])
+
+    if np.sum(mask) < 8:
+        # not enough good matches to refine
+        return rot_ci
+
+    A = cam_vecs[mask]
+    B = nn[mask]
+
+    # weights from flux if provided
+    if cam_flux is not None:
+        cam_flux = np.asarray(cam_flux, dtype=np.float64)
+        weights = cam_flux[mask]
+        # normalize weights to unit mean to keep scale stable
+        if np.mean(weights) > 0:
+            weights = weights / np.mean(weights)
+        else:
+            weights = None
+    else:
+        weights = None
+
+    # initial rotation vector
+    rvec0 = R.from_matrix(rot_ci.as_matrix()).as_rotvec()
+
+    def residuals(rvec):
+        Rm = R.from_rotvec(rvec)
+        A_rot = Rm.apply(A)
+        dots_local = np.clip(np.sum(A_rot * B, axis=1), -1.0, 1.0)
+        ang_local = np.arccos(dots_local)
+        if weights is not None:
+            return ang_local * np.sqrt(weights)
+        return ang_local
+
+    # robust least squares with soft L1 loss
+    try:
+        res = least_squares(residuals, rvec0, method='trf', loss='soft_l1',
+                            f_scale=1e-3, xtol=1e-12, ftol=1e-12, gtol=1e-12, max_nfev=1000)
+    except Exception as e:
+        print("[REFINE] least_squares failed:", e)
+        return rot_ci
+
+    refined_rot = R.from_rotvec(res.x)
+
+    # evaluate improvement: median angular residual before/after
+    A_before = rot_ci.apply(A)
+    dots_before = np.clip(np.sum(A_before * B, axis=1), -1.0, 1.0)
+    med_before = float(np.median(np.degrees(np.arccos(dots_before))))
+
+    A_after = refined_rot.apply(A)
+    dots_after = np.clip(np.sum(A_after * B, axis=1), -1.0, 1.0)
+    med_after = float(np.median(np.degrees(np.arccos(dots_after))))
+
+    print("\n[REFINE DEBUG]")
+    print("Refine inliers:", int(np.sum(mask)))
+    print("Median error before (deg):", med_before)
+    print("Median error after  (deg):", med_after)
+    print("Refine success:", bool(res.success), "cost:", float(res.cost))
+
+    # accept refined rotation only if it improves median angular residual
+    if med_after <= med_before and med_after <= 0.25:
+        refined_rot._refine_success = bool(res.success)
+        refined_rot._refine_cost = float(res.cost)
+        return refined_rot
+
+    # otherwise keep original
+    return rot_ci
+
+
 
 
 # =========================================================
 # MATCHING CORE
 # =========================================================
+
+from collections import defaultdict
 
 from collections import defaultdict
 
@@ -294,15 +418,24 @@ def match_triangles(
     region_center,
     radius_deg=10.0
 ):
-
     print("\n[MATCH_TRIANGLES]")
     print("Region center (RA,DEC):", region_center, "radius_deg:", radius_deg)
     print("Camera stars (input):", len(cam_vecs))
 
+    # -----------------------------
+    # Load catalog triangle region
+    # -----------------------------
     cat_hashes, cat_ids, cat_vecs, hash_tree = load_triangle_region(
         region_center,
         radius_deg
     )
+
+    # in main or a small test
+    pos_sim, _ = load_gaia_region(region_center=region_center, radius_deg=15.0)
+    hashes, ids, vecs_tri, _ = load_triangle_region(region_center=region_center, radius_deg=10.0)
+
+    print("sim pos sample:", pos_sim[:5])
+    print("tri vecs sample:", vecs_tri[:5])
 
     print("[CAT REGION DEBUG]")
     print("Loaded catalog from triangle region:")
@@ -323,7 +456,6 @@ def match_triangles(
             raise RuntimeError("cat_ids out of range for cat_vecs")
 
     cat_vecs = normalize(cat_vecs)
-
     cat_hashes = np.asarray(cat_hashes, dtype=np.float32)
 
     print("\n[CATALOG HASH DEBUG]")
@@ -331,7 +463,6 @@ def match_triangles(
 
     if len(cat_hashes.shape) != 2:
         raise RuntimeError(f"Catalog hashes not 2D: {cat_hashes.shape}")
-
     if cat_hashes.shape[1] != 5:
         raise RuntimeError(
             f"Catalog triangle signature must be 5D, got {cat_hashes.shape[1]}"
@@ -343,6 +474,9 @@ def match_triangles(
     hash_tree = cKDTree(cat_hashes.astype(np.float32))
     cat_tree = cKDTree(cat_vecs.astype(np.float32))
 
+    # -----------------------------
+    # Build camera triangles
+    # -----------------------------
     cam_triangles, cam_sel = build_triangles(cam_vecs, cam_flux)
 
     print("\n================ TRIANGLE DEBUG ================")
@@ -359,18 +493,21 @@ def match_triangles(
     if len(cam_triangles) == 0:
         raise RuntimeError("No camera triangles built")
 
-    vote_table = defaultdict(int)
+    # -----------------------------
+    # Generate candidate rotations
+    # -----------------------------
     rot_votes = []
+    scores = []
+    tri_for_rot = []
 
     sig_array = np.array([s for s, _ in cam_triangles])
-
     print("\n[CAMERA TRIANGLE SIG STATS]")
     print("mean:", np.mean(sig_array, axis=0))
     print("std :", np.std(sig_array, axis=0))
 
-    for sig, tri in cam_triangles:
-        sig = sig / (np.linalg.norm(sig) + 1e-9)
-        dists, idx = hash_tree.query(sig, k=10)
+    for (sig, tri) in cam_triangles:
+        sig_n = sig / (np.linalg.norm(sig) + 1e-9)
+        dists, idx = hash_tree.query(sig_n, k=10)
         idx = np.atleast_1d(idx)
 
         print("\n[TRIANGLE MATCH DEBUG]")
@@ -381,69 +518,70 @@ def match_triangles(
         cam_ids = list(tri)
         cam_tri = cam_sel[cam_ids]
 
-        for i in idx:
-            cat_tri_ids = cat_ids[i]
+        for i_cat in idx:
+            cat_tri_ids = cat_ids[i_cat]
             cat_tri = cat_vecs[cat_tri_ids]
 
             rot = fast_kabsch(cam_tri, cat_tri)
 
-            Rmat = rot.as_matrix()
-            I = np.eye(3)
-
-            print("\nRotation sanity:")
-            print("det(R):", np.linalg.det(Rmat))
-            print("orthogonality error:", np.linalg.norm(Rmat.T @ Rmat - I))
-
-            rot_votes.append(rot)
-
-            cam_in_cat = rot.apply(cam_vecs)
-            dists_all, nn = cat_tree.query(cam_in_cat, k=1)
-
-            inliers = dists_all < np.radians(0.1)
-
-            print("[TRIANGLE ROT INLIERS] count:", int(np.sum(inliers)),
-                  "min_err_deg:", float(np.degrees(np.min(dists_all))),
-                  "max_err_deg:", float(np.degrees(np.max(dists_all))))
-
-            if np.sum(inliers) < 10:
+            # quick sanity: avoid flipped solutions with negative mean dot
+            cam_mapped = rot.apply(cam_tri)
+            dots = np.sum(cam_mapped * cat_tri, axis=1)
+            mean_dot = float(np.mean(dots))
+            print("[TRI ROT CHECK] mean dot:", mean_dot)
+            if mean_dot < 0.0:
+                print("[TRI ROT CHECK] REJECT rotation: mean dot < 0 (possible 180 flip)")
                 continue
 
-            num_inliers = int(np.sum(inliers))
-            vote_table[num_inliers] += 1
+            # score rotation by inlier count over all camera stars
+            cam_in_cat = rot.apply(cam_vecs)
+            dists_all, _ = cat_tree.query(cam_in_cat, k=1)
+            theta = chord_to_angle(dists_all)
+            score = np.sum(theta < np.radians(0.1))
 
-    if not rot_votes:
-        raise RuntimeError("No pyramid solution")
+            print("[TRIANGLE ROT INLIERS] score:", int(score))
 
-    scores = []
+            rot_votes.append(rot)
+            scores.append(score)
+            tri_for_rot.append(tri)
 
-    for r in rot_votes:
-        cam_in_cat = r.apply(cam_vecs)
-        dists, _ = cat_tree.query(cam_in_cat, k=1)
-        score = np.sum(dists < np.radians(0.1))
-        scores.append(score)
+    if len(scores) == 0:
+        raise RuntimeError("No pyramid solution (no valid scores)")
 
+    # -----------------------------
+    # Pick best rotation
+    # -----------------------------
     best_idx = int(np.argmax(scores))
     best_rot = rot_votes[best_idx]
+    best_cam_tri = tri_for_rot[best_idx]
 
     print("\n[PYRAMID SCORE DEBUG]")
     print("All scores:", scores)
     print("Best score index:", best_idx, "value:", scores[best_idx])
+    print("Best camera triangle:", best_cam_tri)
 
+    # -----------------------------
+    # Final inlier mask for best_rot
+    # -----------------------------
     cam_in_cat = best_rot.apply(cam_vecs)
     tree = cKDTree(cat_vecs)
 
     dists, nn = tree.query(cam_in_cat, k=1)
-    mask = dists < np.radians(0.1)
+    nn_vecs = cat_vecs[nn]
+    dots = np.clip(np.sum(cam_in_cat * nn_vecs, axis=1), -1.0, 1.0)
+    ang = np.arccos(dots)
+    mask = ang < np.radians(0.1)
 
+    theta = chord_to_angle(dists)
     print("[PYRAMID FINAL MASK] inliers:", int(np.sum(mask)),
-          "min_err_deg:", float(np.degrees(np.min(dists))),
-          "max_err_deg:", float(np.degrees(np.max(dists))))
+          "min_err_deg:", float(np.degrees(np.min(theta))),
+          "max_err_deg:", float(np.degrees(np.max(theta))))
 
     if np.sum(mask) < 6:
         raise RuntimeError("No stable solution")
 
+    # refine rotation on inliers
     refined = fast_kabsch(cam_vecs[mask], cat_vecs[nn[mask]])
-
     score = int(np.sum(mask))
 
     print("\n===== PYRAMID RESULT =====")
@@ -460,19 +598,146 @@ def match_triangles(
     print(f"Recovered RA  (from match_triangles): {ra_rec:.6f}")
     print(f"Recovered DEC (from match_triangles): {dec_rec:.6f}")
 
-    return refined, score, cat_vecs
+    # refine rotation on inliers
+    refined = fast_kabsch(cam_vecs[mask], cat_vecs[nn[mask]])
+    score = int(np.sum(mask))
+
+    print("\n===== PYRAMID RESULT =====")
+    print("Inliers:", score)
+
+    # -----------------------------
+    # DEBUG: is boresight biased toward winning triangle?
+    # -----------------------------
+    boresight_cam = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    boresight_cat = refined.apply(boresight_cam)
+
+    # winning triangle in catalog frame
+    cat_tri_ids_best = cat_ids[best_idx]          # indices into cat_vecs
+    cat_tri_best = cat_vecs[cat_tri_ids_best]     # 3×3
+
+    tri_centroid = np.mean(cat_tri_best, axis=0)
+    tri_centroid /= np.linalg.norm(tri_centroid) + 1e-9
+
+    dot_bt = np.clip(np.dot(boresight_cat, tri_centroid), -1.0, 1.0)
+    ang_bt_deg = np.degrees(np.arccos(dot_bt))
+
+    print("\n[TRIANGLE BIAS DEBUG]")
+    print("Boresight (cat frame):", boresight_cat)
+    print("Winning tri centroid :", tri_centroid)
+    print("Angle boresight ↔ tri centroid (deg):", ang_bt_deg)
+
+
+    return refined, score, cat_vecs, mask, best_cam_tri, cam_sel, cat_tri_best
+
+
+def match_triangles_direct(cam_vecs, cam_flux, cat_vecs, cat_flux, region_center, radius_deg):
+    """
+    Triangle-based attitude solve using the EXACT same catalog
+    that the simulator used (no tiles, no caches).
+    """
+
+    # Convert region center to unit vector
+    ra, dec = np.radians(region_center[0]), np.radians(region_center[1])
+    center_vec = np.array([
+        np.cos(dec) * np.cos(ra),
+        np.cos(dec) * np.sin(ra),
+        np.sin(dec)
+    ])
+
+    # Angular radius in radians
+    rad = np.radians(radius_deg)
+
+    # Filter catalog to stars within radius_deg of region center
+    dots = np.clip(cat_vecs @ center_vec, -1.0, 1.0)
+    ang = np.arccos(dots)
+    mask = ang <= rad
+
+    cat_vecs = cat_vecs[mask]
+    cat_flux = cat_flux[mask]
+
+    print(f"[CAT REGION FILTER] kept {len(cat_vecs)} stars out of {len(mask)}")
+
+    cam_vecs = normalize(cam_vecs)
+    cat_vecs = normalize(cat_vecs)
+
+    # Build camera triangles
+    cam_triangles, cam_sel = build_triangles(cam_vecs, cam_flux)
+
+    # Build catalog triangles with same logic
+    cat_triangles, cat_sel = build_triangles(cat_vecs, cat_flux)
+
+    if len(cam_triangles) == 0 or len(cat_triangles) == 0:
+        raise RuntimeError("No triangles available for matching")
+
+    # KD-tree on catalog triangle signatures
+    cat_sigs = np.array([sig for sig, _ in cat_triangles], dtype=np.float32)
+    cat_sigs /= (np.linalg.norm(cat_sigs, axis=1, keepdims=True) + 1e-9)
+    hash_tree = cKDTree(cat_sigs)
+
+    rot_votes = []
+    scores = []
+    tri_for_rot = []
+
+    for sig, tri in cam_triangles:
+        sig_n = sig / (np.linalg.norm(sig) + 1e-9)
+        dists, idx = hash_tree.query(sig_n, k=10)
+        idx = np.atleast_1d(idx)
+
+        cam_ids = list(tri)
+        cam_tri = cam_sel[cam_ids]
+
+        for i_cat in idx:
+            cat_ids = list(cat_triangles[i_cat][1])
+            cat_tri = cat_sel[cat_ids]
+
+            rot = fast_kabsch(cam_tri, cat_tri)
+
+            # score over all camera stars
+            cam_in_cat = rot.apply(cam_vecs)
+            cat_tree = cKDTree(cat_vecs.astype(np.float32))
+            dists_all, nn = cat_tree.query(cam_in_cat, k=1)
+            theta = chord_to_angle(dists_all)
+            score = np.sum(theta < np.radians(0.1))
+
+            rot_votes.append(rot)
+            scores.append(score)
+            tri_for_rot.append(tri)
+
+    if not scores:
+        raise RuntimeError("No pyramid solution (no valid scores)")
+
+    best_idx = int(np.argmax(scores))
+    best_rot = rot_votes[best_idx]
+    best_cam_tri = tri_for_rot[best_idx]
+
+    # final inlier mask
+    cam_in_cat = best_rot.apply(cam_vecs)
+    cat_tree = cKDTree(cat_vecs.astype(np.float32))
+    dists, nn = cat_tree.query(cam_in_cat, k=1)
+    nn_vecs = cat_vecs[nn]
+    dots = np.clip(np.sum(cam_in_cat * nn_vecs, axis=1), -1.0, 1.0)
+    ang = np.arccos(dots)
+    mask = ang < np.radians(0.1)
+
+    refined = fast_kabsch(cam_vecs[mask], cat_vecs[nn[mask]])
+    score = int(np.sum(mask))
+
+    return refined, score, cat_vecs, mask, best_cam_tri, cam_sel
 
 
 # =========================================================
 # MAIN PIPELINE
 # =========================================================
-
-def process_star_tracker_output(data, region_center, radius_deg=10.0):
-
+def process_star_tracker_output(
+    data,
+    region_center,
+    radius_deg=10.0,
+    return_plot=False
+):
     print("STAR TRACKER PROCESSING INPUT")
     print("RegionCenter:", region_center)
     print("RadiusDeg:", radius_deg)
-    print("Data:", data)
+    print("Data keys:", list(data.keys()))
 
     cam_vecs_full = np.asarray(data["camera_vectors"], dtype=np.float32)
     cam_flux_full = np.asarray(data["flux"], dtype=np.float32)
@@ -483,33 +748,43 @@ def process_star_tracker_output(data, region_center, radius_deg=10.0):
     print("Initial flux stats: min =", float(np.min(cam_flux_full)),
           "max =", float(np.max(cam_flux_full)))
 
+    # ----------------------------------------------------
+    # Camera filtering
+    # ----------------------------------------------------
     cam_vecs = cam_vecs_full.copy()
     cam_flux = cam_flux_full.copy()
 
-    top_k = 300
-
+    top_k = 500
     if len(cam_flux) > top_k:
-       idx = np.argsort(cam_flux)[-top_k:]
-       cam_vecs = cam_vecs[idx]
-       cam_flux = cam_flux[idx]
+        idx = np.argsort(cam_flux)[-top_k:]
+        cam_vecs = cam_vecs[idx]
+        cam_flux = cam_flux[idx]
 
     print("\n===== CAMERA FILTERING =====")
     print("Reduced camera stars to:", len(cam_vecs))
     print("Flux range:", float(np.min(cam_flux)), "to", float(np.max(cam_flux)))
 
-    rot, score, cat_all = match_triangles(
+    # ----------------------------------------------------
+    # Use EXACT same catalog as simulator
+    # ----------------------------------------------------
+    cat_all = np.asarray(data["catalog_vectors"], dtype=np.float32)
+    cat_flux = np.asarray(data["catalog_flux"], dtype=np.float32)
+
+    # Triangle match + refinement using shared catalog
+    rot, score, cat_all, inlier_mask, best_cam_tri, cam_sel = match_triangles_direct(
         cam_vecs,
         cam_flux,
+        cat_all,
+        cat_flux,
         region_center,
         radius_deg
     )
 
     rot = refine_solution(rot, cam_vecs, cat_all)
 
-    print("\n================ ATTITUDE VALIDATION ================")
-
-    boresight = rot.apply([0, 0, 1])
-
+    # ----------------------------------------------------
+    # Ground-truth direction from region_center (boresight only)
+    # ----------------------------------------------------
     ra_true_deg, dec_true_deg = region_center
     ra_true = np.radians(ra_true_deg)
     dec_true = np.radians(dec_true_deg)
@@ -520,6 +795,9 @@ def process_star_tracker_output(data, region_center, radius_deg=10.0):
         np.sin(dec_true)
     ])
 
+    print("\n================ ATTITUDE VALIDATION ================")
+
+    boresight = rot.apply([0.0, 0.0, 1.0])
     dot = np.clip(np.dot(true_dir, boresight), -1.0, 1.0)
     ang_err_deg = np.degrees(np.arccos(dot))
 
@@ -528,27 +806,31 @@ def process_star_tracker_output(data, region_center, radius_deg=10.0):
     print("Dot product        :", dot)
     print("Angular error (deg):", ang_err_deg)
 
+    # ----------------------------------------------------
+    # Inlier score using final rotation
+    # ----------------------------------------------------
     final_score = count_inliers(rot, cam_vecs, cat_all)
 
     print("\n================ INLIER ANALYSIS ================")
 
     cam_inertial = rot.apply(cam_vecs)
-
     cat_tree = cKDTree(cat_all.astype(np.float32))
     dists, nn = cat_tree.query(cam_inertial, k=1)
+    theta = chord_to_angle(dists)
 
     print("Total camera stars:", len(cam_vecs))
-    print("Median error (deg):", np.degrees(np.median(dists)))
-    print("90th percentile   :", np.degrees(np.percentile(dists, 90)))
-    print("Max error         :", np.degrees(np.max(dists)))
+    print("Median error (deg):", np.degrees(np.median(theta)))
+    print("90th percentile   :", np.degrees(np.percentile(theta, 90)))
+    print("Max error         :", np.degrees(np.max(theta)))
+    print("Inliers @0.05°:", int(np.sum(theta < np.radians(0.05))))
+    print("Inliers @0.1° :", int(np.sum(theta < np.radians(0.1))))
+    print("Inliers @0.5° :", int(np.sum(theta < np.radians(0.5))))
 
-    print("Inliers @0.05°:", np.sum(dists < np.radians(0.05)))
-    print("Inliers @0.1° :", np.sum(dists < np.radians(0.1)))
-    print("Inliers @0.5° :", np.sum(dists < np.radians(0.5)))
-
-    boresight = rot.apply([0, 0, 1])
-
-    ra = np.degrees(np.arctan2(boresight[1], boresight[0])) % 360
+    # ----------------------------------------------------
+    # Final boresight RA/DEC from recovered rotation
+    # ----------------------------------------------------
+    boresight = rot.apply([0.0, 0.0, 1.0])
+    ra = np.degrees(np.arctan2(boresight[1], boresight[0])) % 360.0
     dec = np.degrees(np.arcsin(boresight[2]))
 
     print("\n===== ATTITUDE DEBUG =====")
@@ -556,6 +838,92 @@ def process_star_tracker_output(data, region_center, radius_deg=10.0):
     print("True direction:", true_dir)
     print("Boresight dot product:", np.clip(np.dot(true_dir, boresight), -1.0, 1.0))
     print("Boresight angular error (deg):", ang_err_deg)
+    print("Recovered RA,DEC:", ra, dec)
+    print("Input region_center (RA,DEC):", region_center)
+
+    # ----------------------------------------------------
+    # TRUE attitude from simulation (if present)
+    # ----------------------------------------------------
+    true_rot = None
+    if "true_quat" in data:
+        q = np.asarray(data["true_quat"], dtype=np.float64)
+        true_rot = R.from_quat(q)
+        print("[TRUE ATTITUDE] Using true_quat from data.")
+    elif "true_rot_matrix" in data:
+        Rm_true = np.asarray(data["true_rot_matrix"], dtype=np.float64).reshape(3, 3)
+        true_rot = R.from_matrix(Rm_true)
+        print("[TRUE ATTITUDE] Using true_rot_matrix from data.")
+    else:
+        print("[TRUE ATTITUDE] No true attitude in data.")
+
+    if return_plot:
+        fig, axes = plt.subplots(1, 2 if true_rot is not None else 1, figsize=(16, 8))
+        if true_rot is not None:
+            ax_est, ax_true = axes
+        else:
+            ax_est = axes
+
+        cat_ra = np.degrees(np.arctan2(cat_all[:, 1], cat_all[:, 0])) % 360.0
+        cat_dec = np.degrees(np.arcsin(cat_all[:, 2]))
+
+        cam_est = rot.apply(cam_vecs)
+        cam_est_ra = np.degrees(np.arctan2(cam_est[:, 1], cam_est[:, 0])) % 360.0
+        cam_est_dec = np.degrees(np.arcsin(cam_est[:, 2]))
+
+        ax_est.scatter(cat_ra, cat_dec, s=3, color="gray", alpha=0.4, label="Catalog stars")
+        ax_est.scatter(cam_est_ra, cam_est_dec, s=8, color="cyan", alpha=0.8, label="Camera (est)")
+        ax_est.scatter(
+            cam_est_ra[inlier_mask],
+            cam_est_dec[inlier_mask],
+            s=20,
+            color="yellow",
+            label="Matched inliers"
+        )
+
+        i, j, k = best_cam_tri
+        cam_sel_est = rot.apply(cam_sel)
+        tri_ra = np.degrees(np.arctan2(cam_sel_est[[i, j, k, i], 1],
+                                       cam_sel_est[[i, j, k, i], 0])) % 360.0
+        tri_dec = np.degrees(np.arcsin(cam_sel_est[[i, j, k, i], 2]))
+        ax_est.plot(tri_ra, tri_dec, color="red", linewidth=1.5, label="Winning triangle")
+
+        ax_est.set_title("Estimated Sky (Recovered Attitude)")
+        ax_est.set_xlabel("RA (deg)")
+        ax_est.set_ylabel("DEC (deg)")
+        ax_est.legend()
+
+        if true_rot is not None:
+            cam_true = true_rot.apply(cam_vecs)
+            cam_true_ra = np.degrees(np.arctan2(cam_true[:, 1], cam_true[:, 0])) % 360.0
+            cam_true_dec = np.degrees(np.arcsin(cam_true[:, 2]))
+
+            print("\n[ATTITUDE COMPARISON]")
+            print("Recovered boresight (rot):", rot.apply([0, 0, 1]))
+            print("True boresight (true_rot):", true_rot.apply([0, 0, 1]))
+
+            rel = true_rot * rot.inv()
+            rvec_rel = rel.as_rotvec()
+            angle_rel = np.linalg.norm(rvec_rel)
+            axis_rel = rvec_rel / (np.linalg.norm(axis_rel := np.linalg.norm(rvec_rel)) + 1e-9)
+
+            print("Relative rot angle (deg):", np.degrees(angle_rel))
+            print("Relative rot axis:", axis_rel)
+
+            ax_true.scatter(cat_ra, cat_dec, s=3, color="gray", alpha=0.4, label="Catalog stars")
+            ax_true.scatter(cam_true_ra, cam_true_dec, s=8, color="lime", alpha=0.8, label="Camera (true)")
+
+            ax_true.set_title("True Sky (Ground Truth Attitude)")
+            ax_true.set_xlabel("RA (deg)")
+            ax_true.set_ylabel("DEC (deg)")
+            ax_true.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+    if true_rot is not None:
+        rel = true_rot * rot.inv()
+        angle_rel = np.linalg.norm(rel.as_rotvec())
+        print("Relative rot angle (deg):", np.degrees(angle_rel))
 
     return {
         "rotation_camera_to_inertial": rot,

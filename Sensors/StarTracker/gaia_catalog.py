@@ -242,7 +242,7 @@ def query_tile(ra_tile, dec_tile):
 # TRIANGLE CACHE BUILD
 # =========================================================
 
-def build_triangle_cache(ra_tile, dec_tile, top_k=8, neighbor_k=8):
+def build_triangle_cache(ra_tile, dec_tile, top_k=8, neighbor_k=12):
     """
     Build triangle cache for a tile but limit triangles by nearest neighbors.
 
@@ -266,7 +266,7 @@ def build_triangle_cache(ra_tile, dec_tile, top_k=8, neighbor_k=8):
     flux = np.asarray(flux, dtype=np.float32)
 
     # keep only the brightest stars (reduce N)
-    idx_bright = np.argsort(flux)[::-1][:64]
+    idx_bright = np.argsort(flux)[::-1][:128]
     vecs = vecs[idx_bright]
     flux = flux[idx_bright]
 
@@ -374,6 +374,7 @@ def load_gaia_region(region_center=(10, 41), radius_deg=3):
         pos = pos[unique_idx]
         flux = flux[unique_idx]
 
+
     return pos, flux
 
 
@@ -413,6 +414,7 @@ def load_triangle_region(region_center=(10, 41), radius_deg=3):
         tri_ids = np.asarray(data["triangle_ids"], dtype=np.int32).reshape(-1, 3)
         vecs = np.asarray(data["star_vectors"], dtype=np.float32).reshape(-1, 3)
 
+
         if len(hashes) == 0:
             continue
 
@@ -434,6 +436,7 @@ def load_triangle_region(region_center=(10, 41), radius_deg=3):
         if not np.any(mask):
             continue
 
+
         # Filter vectors
         vecs = vecs[mask]
 
@@ -453,6 +456,24 @@ def load_triangle_region(region_center=(10, 41), radius_deg=3):
         # Reindex triangle IDs after filtering
         remap = np.cumsum(mask) - 1
         tri_ids = remap[tri_ids]
+
+
+        print("[TRI REGION REMAP] original vec count:", mask.shape[0])
+        print("[TRI REGION REMAP] kept vec count:", int(np.sum(mask)))
+        print("[TRI REGION REMAP] remap sample (first 10):", remap[:10])
+        print("[TRI REGION REMAP] tri_ids sample (first 10):", tri_ids[:10])
+        # sanity: ensure tri_ids are within [0, kept_count-1]
+        if tri_ids.size > 0:
+            if np.max(tri_ids) >= np.sum(mask) or np.min(tri_ids) < 0:
+                print("[TRI REGION REMAP] ERROR: tri_ids out of range after remap")
+
+
+        print("[TRI REGION FILTER]")
+        print("original vecs count:", len(mask))
+        print("kept triangles:", len(keep))
+        print("remap sample (first 10):", remap[:10])
+        print("tri_ids sample (first 10):", tri_ids[:10])
+
 
         # Append
         ids_all.append(tri_ids + offset)

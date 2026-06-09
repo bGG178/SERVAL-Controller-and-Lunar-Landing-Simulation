@@ -91,33 +91,69 @@ def generate_startracker_view(
         radius_deg=radius_deg_gaia
     )
 
+    # Defensive: ensure catalog vectors are unit-length direction vectors
+    if star_positions.size > 0:
+        star_positions = star_positions / (np.linalg.norm(star_positions, axis=1, keepdims=True) + 1e-9)
+
     if len(star_positions) == 0:
         raise RuntimeError("No stars loaded")
 
     # -------------------------
     # Camera frame
     # -------------------------
-    boresight = radec_to_vec(*region_center_coords)
-    print("Boresight within Generate Startracker View: ", boresight)
-    up_ref = np.array([0.0, 0.0, 1.0])
+    # --- stable analytic tangent plane basis at RA DEC ---
+    ra_deg, dec_deg = region_center_coords
+    ra = np.radians(ra_deg)
+    dec = np.radians(dec_deg)
 
-    if np.abs(np.dot(up_ref, boresight)) > 0.9:
-        up_ref = np.array([0.0, 1.0, 0.0])
+    # boresight in inertial coordinates
+    z_cam = np.array([
+        np.cos(dec) * np.cos(ra),
+        np.cos(dec) * np.sin(ra),
+        np.sin(dec)
+    ], dtype=np.float64)
 
-    x_base = np.cross(up_ref, boresight)
-    x_base /= np.linalg.norm(x_base)
+    # unit vector pointing toward increasing RA (east) in inertial coords
+    x_cam = np.array([
+        -np.sin(ra),
+        np.cos(ra),
+        0.0
+    ], dtype=np.float64)
 
-    y_base = np.cross(boresight, x_base)
-    y_base /= np.linalg.norm(y_base)
+    # unit vector pointing toward increasing DEC (north) in inertial coords
+    y_cam = np.array([
+        -np.cos(ra) * np.sin(dec),
+        -np.sin(ra) * np.sin(dec),
+        np.cos(dec)
+    ], dtype=np.float64)
 
-    z_base = boresight
+    # normalize for safety
+    x_cam /= np.linalg.norm(x_cam)
+    y_cam /= np.linalg.norm(y_cam)
+    z_cam /= np.linalg.norm(z_cam)
 
+    # apply roll about boresight (axis-angle)
     roll_rad = np.radians(roll_deg)
+    if abs(roll_rad) > 1e-12:
+        R_roll = R.from_rotvec(roll_rad * z_cam)
+        x_cam = R_roll.apply(x_cam)
+        y_cam = R_roll.apply(y_cam)
 
-    x_cam = rotate_around_axis(x_base, z_base, roll_rad)
-    y_cam = rotate_around_axis(y_base, z_base, roll_rad)
+    # Build rotation matrix that maps inertial vectors into camera coordinates.
+    # Each row is the camera axis expressed in inertial coordinates.
+    # Then R.apply(inertial_vector) gives the vector in camera frame.
+    # Build rotation matrix mapping inertial -> camera coordinates.
+    # Each column is a camera axis expressed in inertial coordinates, so transpose the stacked axes.
+    R_mat = np.vstack([x_cam, y_cam, z_cam])
+    # sanity: ensure orthonormal
+    assert np.allclose(R_mat.T @ R_mat, np.eye(3), atol=1e-6), "R_mat not orthonormal"
+    R_cam = R.from_matrix(R_mat)
 
-    R_cam = R.from_matrix(np.vstack([x_cam, y_cam, z_base]))
+
+    # Optional quick sanity check printed to logs
+    mapped = R_cam.apply(z_cam)
+    angle_deg = np.degrees(np.arccos(np.clip(np.dot(mapped, [0, 0, 1]), -1.0, 1.0)))
+    print(f"SANITY mapped boresight -> {mapped}, angle to camera z-axis: {angle_deg:.6f} deg")
 
     # -------------------------
     # Transform + normalize
@@ -170,10 +206,19 @@ def generate_startracker_view(
         stars_cam_visible = stars_cam_visible[inside]
 
         bright = f > min_flux
+
+        # after bright filtering — ensure consistent empty-array shapes
         px = px[bright]
         py = py[bright]
         f = f[bright]
         stars_cam_visible = stars_cam_visible[bright]
+
+        # ensure types and shapes even when empty
+        if px.size == 0:
+            px = np.empty((0,), dtype=np.int32)
+            py = np.empty((0,), dtype=np.int32)
+            f = np.empty((0,), dtype=np.float32)
+            stars_cam_visible = np.empty((0, 3), dtype=np.float32)
 
     # =========================================================
     # ONLY BUILD IMAGE IF REQUESTED
@@ -208,9 +253,8 @@ def generate_startracker_view(
             dipper_cam = {k: R_cam.apply(v) for k, v in dipper_vecs.items()}
             dipper_pixels = {k: project(v) for k, v in dipper_cam.items()}
 
-    # -------------------------
-    # Output (always lightweight)
-    # -------------------------
+    true_rot_cam_to_inertial = R_cam.inv()
+
     return {
         "pixel_x": px,
         "pixel_y": py,
@@ -219,6 +263,11 @@ def generate_startracker_view(
         "fov_deg": fov_deg,
         "scale": scale,
         "dipper_pixels": dipper_pixels,
-        "image": image,  # will be None unless return_plot=True
-        #"figure": figure,  # will be None unless return_plot=True
+        "image": image,
+        "true_rot_matrix": true_rot_cam_to_inertial.as_matrix(),
+        "true_quat": true_rot_cam_to_inertial.as_quat(),
+        # NEW: exact catalog used by the sim (inertial frame)
+        "catalog_vectors": star_positions.astype(np.float32),
+        "catalog_flux": fluxes.astype(np.float32),
     }
+

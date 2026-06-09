@@ -9,7 +9,7 @@ import time
 # TEST TARGET
 # ==========================================
 
-input_area = (180.0, 51.0)
+input_area = (180.0, 54.0)
 
 data = generate_startracker_view(
     return_plot=False,
@@ -22,7 +22,8 @@ t0 = time.time()
 
 result = process_star_tracker_output(
     data,
-    region_center=input_area
+    region_center=input_area,
+    return_plot = True
 )
 
 elapsed = time.time() - t0
