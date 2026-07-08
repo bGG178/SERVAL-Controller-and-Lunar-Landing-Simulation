@@ -1,10 +1,8 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
-import time
 
-from Sensors.StarTracker.gaia_catalog import load_gaia_region
-from Sensors.StarTracker.constellations import (
+from Sensors.StarTracker import load_gaia_region
+from Sensors.StarTracker import (
     BIG_DIPPER_STARS,
     BIG_DIPPER_LINES,
     get_constellation_vectors

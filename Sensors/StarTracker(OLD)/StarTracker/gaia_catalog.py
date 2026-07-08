@@ -359,10 +359,10 @@ def load_gaia_region(region_center=(10, 41), radius_deg=3):
     pos = np.concatenate(pos)
     flux = np.concatenate(flux)
 
-    # 🔴 NEW: discard the lowest 90% flux stars to drastically reduce catalog size
+    # 🔴 NEW: discard the lowest 95% flux stars to drastically reduce catalog size
     if len(flux) > 0:
-        # keep only the top 10% brightest stars by flux
-        thresh = np.percentile(flux, 90.0)
+        # keep only the top 5% brightest stars by flux
+        thresh = np.percentile(flux, 95.0)
         keep_mask = flux >= thresh
         pos = pos[keep_mask]
         flux = flux[keep_mask]

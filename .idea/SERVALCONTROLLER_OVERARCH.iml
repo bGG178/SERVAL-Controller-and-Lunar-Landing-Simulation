@@ -5,8 +5,8 @@
       <sourceFolder url="file://$MODULE_DIR$" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
       <excludeFolder url="file://$MODULE_DIR$/Sensors/.venv" />
-      <excludeFolder url="file://$MODULE_DIR$/Sensors/StarTracker/Starcache" />
-      <excludeFolder url="file://$MODULE_DIR$/Sensors/StarTracker/TriStarCache" />
+      <excludeFolder url="file://$MODULE_DIR$/Sensors/StarTracker(OLD)/StarTracker/Starcache" />
+      <excludeFolder url="file://$MODULE_DIR$/Sensors/StarTracker(OLD)/StarTracker/TriStarCache" />
     </content>
     <orderEntry type="jdk" jdkName="WSL (Ubuntu): (/home/welov/.virtualenvs/SERVALCONTROLLER_OVERARCH/bin/python)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

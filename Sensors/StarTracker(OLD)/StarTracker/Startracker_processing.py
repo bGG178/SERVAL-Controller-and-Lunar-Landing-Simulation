@@ -3,7 +3,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
 
-from Sensors.StarTracker.gaia_catalog import (
+from Sensors.StarTracker import (
     load_triangle_region,
     verify_fourth_star,
     load_gaia_region
@@ -407,10 +407,6 @@ def refine_solution(rot_ci, cam_vecs, cat_vecs, cam_flux=None):
 # =========================================================
 # MATCHING CORE
 # =========================================================
-
-from collections import defaultdict
-
-from collections import defaultdict
 
 def match_triangles(
     cam_vecs,

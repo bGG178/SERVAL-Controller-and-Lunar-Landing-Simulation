@@ -1,5 +1,5 @@
-from StarTracker.star_tracker_sim import generate_startracker_view
-from StarTracker.Startracker_processing import process_star_tracker_output
+from Sensors.StarTracker import generate_startracker_view
+from Sensors.StarTracker import process_star_tracker_output
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -9,7 +9,7 @@ import time
 # TEST TARGET
 # ==========================================
 
-input_area = (180.0, 51.0)
+input_area = (180.0, 55.0)
 
 data = generate_startracker_view(
     return_plot=False,
