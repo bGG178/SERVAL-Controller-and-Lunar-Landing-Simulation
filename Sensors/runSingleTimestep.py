@@ -1,4 +1,4 @@
-from Sensors.Sensors import SensorsManager
+from Sensors import SensorsManager
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt

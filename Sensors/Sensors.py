@@ -2,7 +2,7 @@ from Basilisk.utilities import SimulationBaseClass, macros
 from Basilisk.simulation import spacecraft
 
 from IMU import IMU
-from Sensors import StarTracker
+from StarTracker import StarTracker
 
 
 class SensorsManager:
