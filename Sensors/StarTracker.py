@@ -24,6 +24,9 @@ class StarTracker:
             [0.0, 0.0, 1.0]
         ]
 
+        self.model.setWalkBounds([0.000034, 0.000034, 0.00034]) #maximum accumulated error magnitude
+
+
         self.model.setAMatrix(self.model.getAMatrix())  #Set MRP shadow set
         self.recorder = None                            #Init recorder var
         self.fields = STSensorMsgPayload.__fields__()   #Retrieves all fields in the ST output message

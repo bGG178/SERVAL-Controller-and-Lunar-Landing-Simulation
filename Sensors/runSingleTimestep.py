@@ -30,19 +30,23 @@ imu_fields = [
     "DRFramePlatform",
     "AngVelPlatform"
 ]
+fig, axs = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
 
-plt.figure(figsize=(12, 8))
+axs = axs.flatten()
 
-for field in imu_fields:
-    arr = imu[field]     # shape (N,3)
-    for axis in range(3):
-        plt.plot(t, arr[:, axis], label=f"{field}[{axis}]")
+for ax, field in zip(axs, imu_fields):
+    arr = imu[field]   # shape (N, 3)
 
-plt.title("IMU Logged Fields Over Time")
-plt.xlabel("Time [s]")
-plt.ylabel("IMU Values")
-plt.grid(True)
-plt.legend()
+    ax.plot(t, arr[:, 0], label="X")
+    ax.plot(t, arr[:, 1], label="Y")
+    ax.plot(t, arr[:, 2], label="Z")
+
+    ax.set_title(field)
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel(field)
+    ax.grid(True)
+    ax.legend()
+
 plt.tight_layout()
 plt.show()
 
@@ -51,23 +55,25 @@ plt.show()
 # -----------------------------
 q = st["qInrtl2Case"]    # shape (N,4)
 
-alpha = 0.05
-q_filt = np.zeros_like(q)
-q_filt[0] = q[0]
+#FILTERING BELOW! May not be akin to space-based filtering, was just first attempt
+#alpha = 0.05
+#q_filt = np.zeros_like(q)
+#q_filt[0] = q[0]
 
-for i in range(1, len(q)):
-    q_filt[i] = alpha*q[i] + (1-alpha)*q_filt[i-1]
-    q_filt[i] /= np.linalg.norm(q_filt[i])
-
+#for i in range(1, len(q)):
+#    q_filt[i] = alpha*q[i] + (1-alpha)*q_filt[i-1]
+#    q_filt[i] /= np.linalg.norm(q_filt[i])
+#q=q_filt
 
 plt.figure(figsize=(12, 8))
-for i in range(4):
-    plt.plot(t, q_filt[:, i], label=f"qInrtl2Case[{i}]")
+for i in range(3):
+    plt.plot(t, q[:, i+1], label=f"qInrtl2Case[{i+1}]")
 
 plt.title("StarTracker Quaternion Over Time")
 plt.xlabel("Time [s]")
 plt.ylabel("Quaternion Component")
 plt.grid(True)
+
 plt.legend()
 plt.tight_layout()
 plt.show()
@@ -78,7 +84,7 @@ from matplotlib.animation import FuncAnimation
 
 # Convert quaternions (Basilisk gives [q1,q2,q3,q0] = [x,y,z,w])
 # SciPy expects [x,y,z,w], so this is already correct ordering.
-R_mats = R.from_quat(q_filt).as_matrix()   # shape (N,3,3)
+R_mats = R.from_quat(q).as_matrix()   # shape (N,3,3)
 
 # Canonical body axes
 xB = np.array([1,0,0])

@@ -1,6 +1,8 @@
 # IMU.py
 from Basilisk.simulation import imuSensor
 
+#Basing off of Raytheon's IMU25 MEMS Inertial Measurement Unit : https://www.rtx.com/collinsaerospace/-/media/CA/product-assets/marketing/i/imu/imu25-data-sheet.pdf?rev=8f46e99da92e49cb9407e4a3405b7a52
+
 class IMU:
     def __init__(self, name="IMU"):
         self.name = name
@@ -17,16 +19,16 @@ class IMU:
             [0.0, 1.0, 0.0],
             [0.0, 0.0, 1.0]
         ]
-        self.model.senRotBias   = [0.0001, 0.0001, 0.0001]  #Constant offset added to true angular rate of IMU measurement, pre-noise
-        self.model.senTransBias = [0.001,  0.001,  0.001]   #Accelerometer offset added to true acceleration of IMU before noise
-        self.model.accelScale   = [1.0, 1.0, 1.0]           # Gain error multiplied across true acceleration
-        self.model.gyroScale    = [1.0, 1.0, 1.0]           # Gain error multiplied across true angular rate
+        self.model.senRotBias   = [0.00000291, 0.00000291, 0.00000291]  #Constant offset added to true angular rate of IMU measurement, pre-noise
+        self.model.senTransBias = [0.0049,  0.0049,  0.0049]               #Accelerometer offset added to true acceleration of IMU before noise
+        self.model.accelScale   = [1.0, 1.0, 1.0]                       # Gain error multiplied across true acceleration
+        self.model.gyroScale    = [1.0, 1.0, 1.0]                       # Gain error multiplied across true angular rate
 
-        self.model.navErrorsAccel = [0.0005, 0.0005, 0.0005]  # m/s^2, instantaneous gaussian noise
-        self.model.navErrorsGyro = [0.00001, 0.00001, 0.00001]  # rad/s, white noise standard deviation
+        self.model.navErrorsAccel = [0.059, 0.059, 0.059]  # m/s^2, instantaneous gaussian noise
+        self.model.navErrorsGyro = [0.0026, 0.0026, 0.0026]  # rad/s, white noise standard deviation
 
-        self.model.setWalkBoundsAccel([1e-5, 1e-5, 1e-5])  # m/s^2 per sqrt(sec), bias drift over time.
-        self.model.setWalkBoundsGyro([1e-6, 1e-6, 1e-6])  # rad/s per sqrt(sec), bias drift over time.
+        self.model.setWalkBoundsAccel([1e-5, 1e-5, 1e-5])               # m/s^2 per sqrt(sec), bias drift over time.
+        self.model.setWalkBoundsGyro([0.0000145, 0.0000145, 0.0000145])  # rad/s per sqrt(sec), bias drift over time.
 
         self.model.setErrorBoundsAccel([0.01, 0.01, 0.01]) #maximum drift magnitude
         self.model.setErrorBoundsGyro([0.001, 0.001, 0.001]) #maximum drift magnitude
@@ -44,10 +46,10 @@ class IMU:
         ]
 
         self.fields = [
-            "DVFramePlatform",
-            "AccelPlatform",
-            "DRFramePlatform",
-            "AngVelPlatform"
+            "DVFramePlatform",  #Accumulated velocity IMU senses over 1 timestep
+            "AccelPlatform",    #Raw accelerometer measurement
+            "DRFramePlatform",  # Integrated angular rate over timestep
+            "AngVelPlatform"    #Raw angular velocity measurement
         ]
 
         self.recorder = None                                #Initialize the logger/recorder variable
