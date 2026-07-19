@@ -1,11 +1,20 @@
-from Sensors import SensorsManager
+from Spacecraft.Vehicle import Vehicle
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.spatial.transform import Rotation as R
+from matplotlib.animation import FuncAnimation
+
+runtime = 5 #how long to run the simulation for, in seconds
+samp = 0.01 #sampling rate, ie how often to take measurements, in seconds
+sc=Vehicle(samp)
+out = sc.run(runtime / samp)
 
 
-out = SensorsManager().run_single_timestep_test(500)
+
+
+#vvvvvv everything else is just diagnostics and plotting below vvvvvv
 
 for line in out:
     print(out[line])
@@ -19,7 +28,7 @@ st  = out["star_tracker"]["ST"]
 
 # Number of samples (3 samples for 2 timesteps: t=0, 0.01, 0.02)
 num_samples = len(next(iter(imu.values())))
-t = np.arange(num_samples) * 0.01   # 0.01 s timestep
+t = np.arange(num_samples) * samp
 
 # -----------------------------
 # Plot IMU fields
@@ -79,8 +88,6 @@ plt.tight_layout()
 plt.show()
 
 
-from scipy.spatial.transform import Rotation as R
-from matplotlib.animation import FuncAnimation
 
 # Convert quaternions (Basilisk gives [q1,q2,q3,q0] = [x,y,z,w])
 # SciPy expects [x,y,z,w], so this is already correct ordering.
