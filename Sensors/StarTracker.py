@@ -9,7 +9,7 @@ class StarTracker:
         self.model = starTracker.StarTracker()          #Star tracker model init
         self.model.ModelTag = name                      #Tag the model with the name as well
 
-        self.model.dcm_CB = [                           #DCM of Camera frame to Body frame, ie what direction on the spacecraft it is physically pointed at
+        self.model.dcm_CB = [                           #DCM of body to case
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
             [0.0, 0.0, 1.0]
@@ -18,16 +18,16 @@ class StarTracker:
                                                               #ST-HV Star Tracker has a near-boresight accuracy of 7 arcseconds, ie 0.000034 rads
                                                               #ST-HV Star Tracker has an on-boresight accuracy of 70 arcseconds, ie 0.00034 rads
                                                               #Because dcm_CB shows we are pointing along the spacecraft's Z axis, the last MRP error (z axis) is 70 arcseconds
-        self.model.PMatrix = [                          #P Matrix interpolates between Quaternion output of ST into MRP.
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0]
+        self.model.PMatrix = [                          #P Matrix is the noise covariance and used for noise propagation in the Gauss-Markov model.
+            [0.001, 0.0, 0.0],
+            [0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.001]
         ]
 
-        self.model.setWalkBounds([0.000034, 0.000034, 0.00034]) #maximum accumulated error magnitude
+        #self.model.setWalkBounds([0.034, 0.034, 0.34]) #maximum accumulated error magnitude
 
 
-        self.model.setAMatrix(self.model.getAMatrix())  #Set MRP shadow set
+        #self.model.setAMatrix(self.model.getAMatrix())  #Set MRP shadow set
         self.recorder = None                            #Init recorder var
         self.fields = STSensorMsgPayload.__fields__()   #Retrieves all fields in the ST output message
 

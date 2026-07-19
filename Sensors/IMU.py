@@ -24,25 +24,28 @@ class IMU:
         self.model.accelScale   = [1.0, 1.0, 1.0]                       # Gain error multiplied across true acceleration
         self.model.gyroScale    = [1.0, 1.0, 1.0]                       # Gain error multiplied across true angular rate
 
-        self.model.navErrorsAccel = [0.059, 0.059, 0.059]  # m/s^2, instantaneous gaussian noise
-        self.model.navErrorsGyro = [0.0026, 0.0026, 0.0026]  # rad/s, white noise standard deviation
+        senRotNoiseStd=0.0026
+        senTransNoiseStd=0.059
 
-        self.model.setWalkBoundsAccel([1e-5, 1e-5, 1e-5])               # m/s^2 per sqrt(sec), bias drift over time.
-        self.model.setWalkBoundsGyro([0.0000145, 0.0000145, 0.0000145])  # rad/s per sqrt(sec), bias drift over time.
+        self.model.navErrorsAccel = [senTransNoiseStd, senTransNoiseStd, senTransNoiseStd]  # m/s^2, instantaneous gaussian noise
+        self.model.navErrorsGyro = [senRotNoiseStd, senRotNoiseStd,senRotNoiseStd]  # rad/s, white noise standard deviation
 
-        self.model.setErrorBoundsAccel([0.01, 0.01, 0.01]) #maximum drift magnitude
-        self.model.setErrorBoundsGyro([0.001, 0.001, 0.001]) #maximum drift magnitude
+        #self.model.setWalkBoundsAccel([1e-5, 1e-5, 1e-5])               # m/s^2 per sqrt(sec), bias drift over time.
+        #self.model.setWalkBoundsGyro([0.0000145, 0.0000145, 0.0000145])  # rad/s per sqrt(sec), bias drift over time.
+
+        #self.model.setErrorBoundsAccel([0.01, 0.01, 0.01]) #maximum drift magnitude
+        #self.model.setErrorBoundsGyro([0.001, 0.001, 0.001]) #maximum drift magnitude
 
         self.model.PMatrixAccel = [ #acc process noise covariance, how quickly bias drift accumulates
-            [.0010, 0.0, 0.0],
-            [0.0, .0010, 0.0],
-            [0.0, 0.0, .0010]
+            [senTransNoiseStd*1.5, 0.0, 0.0],
+            [0.0, senTransNoiseStd*1.5, 0.0],
+            [0.0, 0.0, senTransNoiseStd*1.5]
         ]
 
         self.model.PMatrixGyro = [ #gyro process noise covariance, how quickly bias drift accumulates
-            [.0010, 0.0, 0.0],
-            [0.0, .0010, 0.0],
-            [0.0, 0.0, .0010]
+            [senRotNoiseStd*1.5, 0.0, 0.0],
+            [0.0, senRotNoiseStd*1.5, 0.0],
+            [0.0, 0.0, senRotNoiseStd*1.5]
         ]
 
         self.fields = [

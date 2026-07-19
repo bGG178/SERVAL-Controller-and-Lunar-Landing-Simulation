@@ -66,8 +66,8 @@ q = st["qInrtl2Case"]    # shape (N,4)
 #q=q_filt
 
 plt.figure(figsize=(12, 8))
-for i in range(3):
-    plt.plot(t, q[:, i+1], label=f"qInrtl2Case[{i+1}]")
+for i in range(4):
+    plt.plot(t, q[:, i+0], label=f"qInrtl2Case[{i+0}]")
 
 plt.title("StarTracker Quaternion Over Time")
 plt.xlabel("Time [s]")
@@ -94,6 +94,9 @@ zB = np.array([0,0,1])
 fig = plt.figure(figsize=(8,8))
 ax = fig.add_subplot(111, projection='3d')
 
+
+
+
 def update(i):
     ax.cla()
     ax.set_xlim([-1,1])
@@ -109,12 +112,12 @@ def update(i):
     zR = R_i @ zB
 
     # Plot rotated axes
-    scale = 0.2
+    scale = 0.6
     ax.quiver(0,0,0, *(scale * xR), color='r', label='X axis')
     ax.quiver(0,0,0, *(scale * yR), color='g', label='Y axis')
     ax.quiver(0,0,0, *(scale * zR), color='b', label='Z axis')
 
     ax.legend()
 
-ani = FuncAnimation(fig, update, frames=num_samples, interval=50)
+ani = FuncAnimation(fig, update, frames=num_samples, interval=100)
 plt.show(block=True)
