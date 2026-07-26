@@ -6,9 +6,8 @@ from .StarTracker import StarTracker
 
 
 class SensorsManager:
-    def __init__(self, Vehicle, sampling_sec=0.01):
-        self.sampling_sec = sampling_sec                    #how often to sample sensors in s
-        self.sampling_ns = macros.sec2nano(sampling_sec)    #how often to sample sensors in ns
+    def __init__(self, Vehicle, sampling_ns=0.01):
+        self.sampling_ns = sampling_ns   #how often to sample sensors in ns
 
         self.vehicle = Vehicle                              #Holds the vehicle class for assigning tasks and models
 
