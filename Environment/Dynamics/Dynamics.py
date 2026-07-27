@@ -3,42 +3,21 @@ from Basilisk.utilities import RigidBodyKinematics as rbk
 import numpy as np
 from typing import Any, Sequence
 
+from Basilisk.simulation import dynamicEffector
 
-class ConstantGravity(sysModel.SysModel):
-    """
-    A class to model constant gravity force in a simulation.
+class ConstantForce(dynamicEffector.DynamicEffector):
 
-    Attributes:
-        force_N (Sequence[float]):
-            The constant gravitational force vector in the inertial frame (N frame).
-        frameInMsg (messaging.SCStatesMsgReader):
-            Reader for spacecraft state messages.
-        forceOutMsg (messaging.ForceAtSiteMsg):
-            Message to output the computed force in the body-fixed frame (B frame).
-    """
+    def __init__(self, force_N):
+        super().__init__()
 
-    def __init__(self, force_N: Sequence[float], *args: Any):
-        """
-        Args:
-            force_N (Sequence[float]): The gravity force vector in the
-            inertial reference frame.
-        """
-        super().__init__(*args)
+        self.force_N = np.array(force_N)
 
-        self.force_N = force_N
+    def computeForceTorque(self, integTime, timeStep):
 
-        self.frameInMsg = messaging.SCStatesMsgReader()
+        # Current spacecraft attitude
+        dcm_BN = rbk.MRP2C(self.hubSigma)
 
-        self.forceOutMsg = messaging.ForceAtSiteMsg()
+        # Convert to body frame
+        self.forceExternal_B = dcm_BN @ self.force_N
 
-    def UpdateState(self, CurrentSimNanos: int):
-        """Called at every integrator step to compute the force
-        in the spacecraft-fixed reference frame."""
-        # N frame: inertial frame
-        # B frame: body-fixed frame
-        frame: messaging.SCStatesMsgPayload = self.frameInMsg()
-        dcm_BN = rbk.MRP2C(frame.sigma_BN)
-        force_B = np.dot(dcm_BN, self.force_N)
-
-        payload = messaging.ForceAtSiteMsgPayload(force_S=force_B)
-        self.forceOutMsg.write(payload, CurrentSimNanos, self.moduleID)
+        self.torqueExternalPntB_B[:] = [0.0,0.0,0.0]

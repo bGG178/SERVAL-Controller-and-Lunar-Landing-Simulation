@@ -11,63 +11,24 @@ from Sensors.Sensors import SensorsManager
 from Basilisk.simulation import mujoco, svIntegrators
 from Basilisk.architecture import messaging
 import os
-from Dynamics.Dynamics import ConstantGravity
+from Environment.Dynamics.Ephemerides import CelestialBody
 from VisualizationHelpers import ThrusterVizMessageWriter
 
 matplotlib.use("TkAgg")
 
 
-runtime = 400.0 #how long to run the simulation for, in seconds
-samp = 0.1 #sampling rate, ie how often to take measurements, in seconds
+runtime = 10.0 #how long to run the simulation for, in seconds
+samp = 0.01 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment
 
 THRUSTER_NAME = "VR900"
 SPACECRAFT_BODY_NAME = "IMX"
-MJXML = "Spacecraft/spacecraft.xml"
 OBJ_NAME = "Luna"
 THRUSTER_LOCATION = [0.0, 0.0, -1.0] #Meters
 THRUSTER_DIRECTION = [0.0, 0.0, 1.0] # [-] ?
 THRUSTER_VIZ_SCALE = 10.0   # [-] ?
 OBJ_VIZ_SCALE = 1000.0
-
-
-def _get_body_geom_info(scene: mujoco.MJScene, body_name: str):
-    """Return the first MuJoCo geom attached to a scene body."""
-    geomInfos = scene.getGeomInfos()
-    for geomIndex in range(len(geomInfos)):
-        geomInfo = geomInfos[geomIndex]
-        if geomInfo.bodyName == body_name:
-            return geomInfo
-    raise ValueError(f"Could not find a MuJoCo geom for body '{body_name}'.")
-
-
-def _attach_thruster_visualization(viz, spacecraft_name: str, writer):
-    """Attach a MuJoCo thruster visualization message to a Vizard body."""
-    from Basilisk.simulation import vizInterface
-
-    for scDataIndex in range(len(viz.scData)):
-        scData = viz.scData[scDataIndex]
-        if scData.spacecraftName != spacecraft_name:
-            continue
-
-        thrInfo = vizInterface.ThrClusterMap()
-        thrInfo.thrTag = writer.ModelTag
-        thrInfo.color = vizSupport.toRGBA255("red")
-        scData.thrInMsgs = messaging.THROutputMsgInMsgsVector(
-            [writer.thrOutMsg.addSubscriber()]
-        )
-        scData.thrInfo = vizInterface.ThrClusterVector([thrInfo])
-        vizSupport.setActuatorGuiSetting(
-            viz,
-            spacecraftName=spacecraft_name,
-            viewThrusterHUD=True,
-        )
-        return
-
-    raise ValueError(
-        f"Could not find spacecraft '{spacecraft_name}' in Vizard spacecraft data."
-    )
 
 
 # Create simulation tasks and processes
@@ -82,7 +43,7 @@ SM = SensorsManager(sc, sampling_ns)                                #initialize 
 sc.initialize_sensors(SM)                                   #attach sensors to vehicle
 
 
-
+"""
 #Initialize MuJoCo scene
 LUNAR_OBJ_PATH = os.path.abspath(
     os.path.join(
@@ -99,80 +60,45 @@ LUNAR_TEXTURE_PATH = os.path.abspath(
             "ItokawaGrayscale.jpg"
         )
 )
-
-scene = mujoco.MJScene.fromFile(MJXML,files=[LUNAR_OBJ_PATH])
-sim.AddModelToTask("record", scene)
-
-#Set the integrator of the scene
-integ = svIntegrators.svIntegratorRKF45(scene)
-integ.setRelativeTolerance(1e-3)
-integ.setAbsoluteTolerance(1e-3)
-scene.setIntegrator(integ)
+"""
 
 #Gravity Model - THIS WILL CHANGE WHEN WE HAVE MORE DYNAMICS/EPHEM DATA FOR THE MOON
-gravity = ConstantGravity(force_N=[0.0, 0.0, -200.0]) #In newtons
-scene.AddModelToDynamicsTask(gravity)
-gravityApplicationSite = scene.getBody(SPACECRAFT_BODY_NAME).getOrigin()
+
+moon = CelestialBody()
+moon.createBody("Moon", True) #Works but breaks vizard for some reason
+moon.attachTo(sc.lander)
+
 
 #Thruster - THIS WILL CHANGE WHEN WE HAVE THE ABILITY FOR THRUSTER CONTROL IN OTHER MODULES
-gravityActuator: mujoco.MJForceActuator = scene.addForceActuator(
-    "hub_gravity", gravityApplicationSite
-)
-gravityActuator.forceInMsg.subscribeTo(gravity.forceOutMsg)
 
-gravity.frameInMsg.subscribeTo(gravityApplicationSite.stateOutMsg) #Change the forceactuator from the site-fixed reference frame to the inertial reference frame
 
-thrust = 75.0 #Thruster strength in newtons
-thrustMsg = messaging.SingleActuatorMsg()
-thrustMsg.write(messaging.SingleActuatorMsgPayload(input=thrust))
-scene.getSingleActuator(THRUSTER_NAME).actuatorInMsg.subscribeTo(thrustMsg)
-
-sc.attach_scene(scene)                                          #For recorder to work properly
 
 if vizSupport.vizFound:
-    asteroidGeom = _get_body_geom_info(scene, OBJ_NAME)
-    thrusterVizWriter = ThrusterVizMessageWriter(
-        THRUSTER_NAME,
-        thrustMsg,
-        thrust,
-        THRUSTER_LOCATION,
-        THRUSTER_DIRECTION,
-        THRUSTER_VIZ_SCALE,
-    )
-    sim.AddModelToTask("record", thrusterVizWriter)
+
 
     viz = vizSupport.enableUnityVisualization(
         sim,
         "record",
-        scene,
+        [sc.lander],
         saveFile=__file__,
     )
 
-    _attach_thruster_visualization(
-        viz,
-        SPACECRAFT_BODY_NAME,
-        thrusterVizWriter,
-    )
+
 
     viz.settings.showSpacecraftAsSprites = -1
     viz.settings.ambient = 0.1
     viz.settings.spacecraftShadowBrightness = 0.07
-    vizSupport.createCustomModel(
-        viz,
-        modelPath=LUNAR_OBJ_PATH,
-        simBodiesToModify=[OBJ_NAME],
-        scale=[
-            OBJ_VIZ_SCALE,
-            OBJ_VIZ_SCALE,
-            OBJ_VIZ_SCALE,
-        ],
-        offset=list(asteroidGeom.pos),
-        rotation=list(RigidBodyKinematics.EP2Euler321(list(asteroidGeom.quat))),
-        customTexturePath=LUNAR_TEXTURE_PATH,
-        shader=1,
+    vizSupport.setActuatorGuiSetting(viz)
+
+    model_path = os.path.abspath(
+        os.path.join("Spacecraft", "IM1.obj")
     )
 
-
+    vizSupport.createCustomModel(
+        viz,
+        model_path,
+        scale=[0.0004,0.0004,0.0004]
+    )
 
 # Run simulation
 sim.InitializeSimulation()  # Start the simulation
