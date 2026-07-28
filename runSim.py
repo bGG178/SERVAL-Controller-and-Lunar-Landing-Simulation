@@ -65,8 +65,8 @@ LUNAR_TEXTURE_PATH = os.path.abspath(
 #Gravity Model - THIS WILL CHANGE WHEN WE HAVE MORE DYNAMICS/EPHEM DATA FOR THE MOON
 
 moon = CelestialBody()
-moon.createBody("Moon", True) #Works but breaks vizard for some reason
-moon.attachTo(sc.lander)
+#moon.createBody("Moon", True) #Works but breaks vizard for some reason. Comment out if you want vizard
+#moon.attachTo(sc.lander)
 
 
 #Thruster - THIS WILL CHANGE WHEN WE HAVE THE ABILITY FOR THRUSTER CONTROL IN OTHER MODULES
@@ -97,6 +97,7 @@ if vizSupport.vizFound:
     vizSupport.createCustomModel(
         viz,
         model_path,
+        offset=[0.73, -0.73, -1.05], #(last value is up and down but reverse so negative = up)
         scale=[0.0004,0.0004,0.0004]
     )
 
