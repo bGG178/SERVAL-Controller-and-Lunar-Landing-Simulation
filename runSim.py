@@ -6,30 +6,37 @@ import math as mat
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import PillowWriter
-from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, RigidBodyKinematics
+from Basilisk.utilities import SimulationBaseClass, macros
 from Sensors.Sensors import SensorsManager
-from Basilisk.simulation import mujoco, svIntegrators
-from Basilisk.architecture import messaging
-import os
-from Environment.Dynamics.Ephemerides import CelestialBody
-from VisualizationHelpers import ThrusterVizMessageWriter
+import Environment.Dynamics as Dynamics
+from Visualization import initialize_vizard
 
 matplotlib.use("TkAgg")
 
 
-runtime = 10.0 #how long to run the simulation for, in seconds
-samp = 0.01 #sampling rate, ie how often to take measurements, in seconds
+runtime = 1000.0 #how long to run the simulation for, in seconds
+samp = 0.25 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment
 
-THRUSTER_NAME = "VR900"
-SPACECRAFT_BODY_NAME = "IMX"
-OBJ_NAME = "Luna"
-THRUSTER_LOCATION = [0.0, 0.0, -1.0] #Meters
-THRUSTER_DIRECTION = [0.0, 0.0, 1.0] # [-] ?
-THRUSTER_VIZ_SCALE = 10.0   # [-] ?
-OBJ_VIZ_SCALE = 1000.0
+orbital_parameters = {
+            "altitude": 10000.0, # Will define orbit Semi-major axis (m). Takes the moon radius + altitude to define it
+            "eccentricity": 0.0, # Eccentricity (0 = circular orbit, 0 < e < 1 = elliptical)
+            "inclination deg": 0.0, # Inclination (rad)
+            "right ascension of ascending node deg": 0.0, # Right Ascension of the Ascending Node (RAAN) (rad)
+            "argument of periapsis deg": 0.0, # Argument of Periapsis (rad)
+            "true anomaly": 90.0, # True Anomaly (rad)
+        }
 
+spacecraft_velocity_override = None #If you wanted, for example, not an orbit at all, you would just put this to [0, 0, 0] and it would just fall from altitude (defined in orbital_parameters) down to the surface of the moon. Although collision isnt a thing yet so itll freak out when it gets to the surface
+spacecraft_position_override = None #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
+
+spacecraft_attitude_MRP = [[0.0], [0.0], [0.0]] #Starting attitude of spacecraft with respect to the body and inertial frame as a modified rodrigues parameter  (N->P)
+spacecraft_attitude_rate = [[0.0], [0.0], [0.0]]  # Current angular velocity with body frame relative to inertial frame (rad/s)
+spacecraft_mass = 2120.0                    #kg, not sure yet how to deal with CoM or where that is defined
+
+
+SPACECRAFT_BODY_NAME = "IMX"
 
 # Create simulation tasks and processes
 process = sim.CreateNewProcess("proc")                          # Create a new simulation process
@@ -38,68 +45,23 @@ process.addTask(task)                                               # Add create
 
 #Continued simulation modules setup
 sc=Vehicle(sim, SPACECRAFT_BODY_NAME, sampling_ns)                                #initialize the vehicle
+sc.lander.hub.sigma_BNInit = spacecraft_attitude_MRP
+sc.lander.hub.omega_BN_BInit = spacecraft_attitude_rate
+sc.lander.hub.mHub = spacecraft_mass                    #CoM currently undefined to my knowledge
+
 SM = SensorsManager(sc, sampling_ns)                                #initialize the sensors manager
 
 sc.initialize_sensors(SM)                                   #attach sensors to vehicle
 
+#Gravity Model
 
-"""
-#Initialize MuJoCo scene
-LUNAR_OBJ_PATH = os.path.abspath(
-    os.path.join(
-        "Environment",
-        "Objects",
-        "ItokawaHayabusa.obj"
-    )
-)
-
-LUNAR_TEXTURE_PATH = os.path.abspath(
-    os.path.join(
-            "Environment",
-            "Objects",
-            "ItokawaGrayscale.jpg"
-        )
-)
-"""
-
-#Gravity Model - THIS WILL CHANGE WHEN WE HAVE MORE DYNAMICS/EPHEM DATA FOR THE MOON
-
-moon = CelestialBody()
-#moon.createBody("Moon", True) #Works but breaks vizard for some reason. Comment out if you want vizard
-#moon.attachTo(sc.lander)
+Dynamics.initialize_dynamics(sim, sc)
+Dynamics.initialize_vehicle_dynamics_parameters(sc, orbital_parameters, spacecraft_velocity_override, spacecraft_position_override)
+sc.initialize_recorder(sim)
 
 
-#Thruster - THIS WILL CHANGE WHEN WE HAVE THE ABILITY FOR THRUSTER CONTROL IN OTHER MODULES
+initialize_vizard(sim, sc)
 
-
-
-if vizSupport.vizFound:
-
-
-    viz = vizSupport.enableUnityVisualization(
-        sim,
-        "record",
-        [sc.lander],
-        saveFile=__file__,
-    )
-
-
-
-    viz.settings.showSpacecraftAsSprites = -1
-    viz.settings.ambient = 0.1
-    viz.settings.spacecraftShadowBrightness = 0.07
-    vizSupport.setActuatorGuiSetting(viz)
-
-    model_path = os.path.abspath(
-        os.path.join("Spacecraft", "IM1.obj")
-    )
-
-    vizSupport.createCustomModel(
-        viz,
-        model_path,
-        offset=[0.73, -0.73, -1.05], #(last value is up and down but reverse so negative = up)
-        scale=[0.0004,0.0004,0.0004]
-    )
 
 # Run simulation
 sim.InitializeSimulation()  # Start the simulation
@@ -123,7 +85,6 @@ velocity      = true[1]
 attitude      = true[2]
 angular_rate  = true[3]
 
-from mpl_toolkits.mplot3d import Axes3D
 
 fig = plt.figure(figsize=(8, 8))
 ax = fig.add_subplot(111, projection='3d')

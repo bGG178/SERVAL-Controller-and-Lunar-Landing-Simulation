@@ -1,4 +1,4 @@
-from Basilisk.utilities import SimulationBaseClass, macros, vizSupport
+from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, unitTestSupport
 from Basilisk.simulation import spacecraft
 from Sensors.Sensors import SensorsManager
 
@@ -8,13 +8,9 @@ class Vehicle:
         self.star_trackers = {}     # sensor Star Tracker initialization, if you have multiple IMUs they get stored here
         self.lander = spacecraft.Spacecraft()        # Create a spacecraft instance from the spacecraft basilisk module
         self.lander.ModelTag = name             # Tag the spacecraft with a name
+        self.sampling_ns = sampling_ns
 
-        self.lander.hub.r_CN_NInit = [0.0, 0.0, 1.0]  # Current position within the inertial frame (in m)
-        self.lander.hub.v_CN_NInit = [0.0, 0.0, -2.0]  # Current velocity within the inertial frame (m/s)
-        self.lander.hub.sigma_BNInit = [[0.0], [0.0], [0.0]]  # Current attitude with respect to the body and inertial frame utilizing a Modified Rodrigues Parameter (MRP) vector. (N->P)
-        self.lander.hub.omega_BN_BInit = [[1.0], [-2.0], [3.0]]  # Current angular velocity with body frame relative to inertial frame (rad/s)
-        self.lander.hub.mHub = 2120.0                     #mass in kg
-        self.lander.hub.r_BcB_B = [0,0,0]                   #Center of mass in B frame
+
 
         self.sim = sim
         self.SM = None                          #make none because it will be applied later
@@ -23,7 +19,7 @@ class Vehicle:
         self.loggers = {}                                   #Holds the logger instances
 
 
-        self.sim.AddModelToTask("record", self.lander)  # Add spacecraft to task
+        #self.sim.AddModelToTask("record", self.lander)  # Add spacecraft to task
 
 
 
@@ -41,6 +37,16 @@ class Vehicle:
         self.sim.AddModelToTask("record", sc_recorder)
 
         self.sc_recorder = sc_recorder
+
+    def initialize_recorder(self,sim):
+        """
+        has its own function because if the recorder setup is not timed properly then Vizard wont run
+        :param sim:
+        :return:
+        """
+
+        scRec = self.lander.scStateOutMsg.recorder(self.sampling_ns)
+        sim.AddModelToTask("record", scRec)
 
 
     def output(self):
