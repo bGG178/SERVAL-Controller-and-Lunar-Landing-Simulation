@@ -28,12 +28,13 @@ orbital_parameters = {
             "true anomaly": 90.0, # True Anomaly (rad)
         }
 
-spacecraft_velocity_override = None #If you wanted, for example, not an orbit at all, you would just put this to [0, 0, 0] and it would just fall from altitude (defined in orbital_parameters) down to the surface of the moon. Although collision isnt a thing yet so itll freak out when it gets to the surface
+spacecraft_velocity_override = [0, 0, 0] #If you wanted, for example, not an orbit at all, you would just put this to [0, 0, 0] and it would just fall from altitude (defined in orbital_parameters) down to the surface of the moon. Although collision isnt a thing yet so itll freak out when it gets to the surface
 spacecraft_position_override = None #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
 
 spacecraft_attitude_MRP = [[0.0], [0.0], [0.0]] #Starting attitude of spacecraft with respect to the body and inertial frame as a modified rodrigues parameter  (N->P)
-spacecraft_attitude_rate = [[0.0], [0.0], [0.0]]  # Current angular velocity with body frame relative to inertial frame (rad/s)
+spacecraft_attitude_rate = [[0.2], [0.0], [0.0]]  # Current angular velocity with body frame relative to inertial frame (rad/s)
 spacecraft_mass = 2120.0                    #kg, not sure yet how to deal with CoM or where that is defined
+
 
 
 SPACECRAFT_BODY_NAME = "IMX"
@@ -146,6 +147,44 @@ plt.show()
 # Extract IMU and ST dictionaries
 imu = out["imu"]["IMU"]
 st  = out["star_tracker"]["ST"]
+
+# Extract IMU, star tracker, and altimeter dictionaries
+imu = out["imu"]["IMU"]
+st  = out["star_tracker"]["ST"]
+altimeter = out["altimeter"]["LaserAltimeter1"]
+
+# --------------------------------------------------
+# Altimeter altitude vs time
+# --------------------------------------------------
+
+altimeter_time = np.array(altimeter["timeTag"]) * 1e-9  # ns -> seconds
+altimeter_data = np.array(altimeter["altitude"])
+
+# Z component contains the altitude measurement
+altitude = altimeter_data[:, 2].astype(float)
+
+# Treat -1 as no measurement
+altitude[altitude == -1] = np.nan
+
+plt.figure(figsize=(10, 5))
+
+plt.plot(
+    altimeter_time,
+    altitude,
+    lw=2,
+    label="Laser Altimeter"
+)
+
+plt.xlabel("Time [s]")
+plt.ylabel("Altitude [m]")
+plt.title("Laser Altimeter Measurement")
+plt.grid(True)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+
 
 # Number of samples (3 samples for 2 timesteps: t=0, 0.01, 0.02)
 num_samples = len(next(iter(imu.values())))

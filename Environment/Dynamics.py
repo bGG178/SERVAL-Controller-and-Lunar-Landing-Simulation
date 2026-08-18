@@ -2,18 +2,26 @@ from Basilisk.utilities import macros, simIncludeGravBody
 from Basilisk.utilities import orbitalMotion
 from typing import Dict
 
+DEBUG_DISABLE_GRAVITY= False
+
 r_moon = 1737400 #radius of the moon in meters
 mu_moon = 4.9048695e12  # meters^3/s^2
+mu_earth = 0.3986004415E+15 #meters^3/s^2
+r_earth = 6378136.6 #meters^3/s^2
 
 
 def initialize_dynamics(sim, sc):
     gravFactory = simIncludeGravBody.gravBodyFactory()
     gravFactory.createSun()
 
+    if DEBUG_DISABLE_GRAVITY == True:
+        mu_moon = 0
+        mu_earth = 0
+
     moon = gravFactory.createCustomGravObject("moon", mu_moon, radEquator=r_moon)
     moon.isCentralBody= True
 
-    earth = gravFactory.createCustomGravObject("earth",0.3986004415E+15, radEquator=6378136.6)
+    earth = gravFactory.createCustomGravObject("earth",mu_earth, radEquator=r_earth)
     earth.isCentralBody = False
 
     timeInitString = "2026 JUL 28 00:00:00.0"

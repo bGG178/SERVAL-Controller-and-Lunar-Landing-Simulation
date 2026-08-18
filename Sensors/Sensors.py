@@ -47,6 +47,26 @@ class SensorsManager:
         self.vehicle.loggers[f"star:{name}"] = rec                  #store logger in the array of loggers for the craft
         return st                                           #returns the ST instance
 
+    def add_altimeter(self,altimeterclass,sc_state_msg, config=None):
+        """
+        Mainly just makes an instance of the Mujoco Altimeter in the simulation
+        :param altimeterclass: Reference to the instance of the altimeter class, assigned in initialize_sensors function
+        :param name: Defined in the Altimeter.py class, NOT HERE
+        :param sc_state_msg:
+        :param config:
+        :return:
+        """
+        alt = altimeterclass
+        name = alt.name
+        alt.scStateInMsg.subscribeTo(sc_state_msg)
+        if config:
+            alt.configure(config)
+        rec = alt.sensorOutMsg.recorder(self.sampling_ns)  # Initialize the recorder/logger for the ST
+        alt.recorder = rec
+        self.vehicle.altimeters[name] = alt  # store ST in the array of STs on board
+        self.vehicle.loggers[f"star:{name}"] = rec  # store logger in the array of loggers for the craft
+        return alt
+
     def register_to_task(self, sim, task_name):
         """
         Registers the basilisk modules to the sensors
@@ -62,6 +82,10 @@ class SensorsManager:
             sim.AddModelToTask(task_name, st.model)     #Add the model of the sensor to the simulation task variable
             sim.AddModelToTask(task_name, st.recorder)  #Add recorder to the simulation task variable
 
+        for alt in self.vehicle.altimeters.values():
+            sim.AddModelToTask(task_name, alt)
+            sim.AddModelToTask(task_name, alt.recorder)
+
     def output(self, index):
         """
         Formats and returns the sensor output
@@ -71,5 +95,5 @@ class SensorsManager:
         return {
             "imu": {name: imu.output(index) for name, imu in self.vehicle.imus.items()},                #IMU Logging and Output
             "star_tracker": {name: st.output(index) for name, st in self.vehicle.star_trackers.items()} #ST Logging and Output
-        }
+            }
 

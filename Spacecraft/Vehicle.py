@@ -1,11 +1,12 @@
 from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, unitTestSupport
 from Basilisk.simulation import spacecraft
-from Sensors.Sensors import SensorsManager
+from Mujoco import MujocoPhysicsEngine as MPE
 
 class Vehicle:
     def __init__(self, sim, name, sampling_ns=0.01):
         self.imus = {}              # sensor IMU initialization, if you have multiple IMUs they get stored here
         self.star_trackers = {}     # sensor Star Tracker initialization, if you have multiple IMUs they get stored here
+        self.altimeters = {}
         self.lander = spacecraft.Spacecraft()        # Create a spacecraft instance from the spacecraft basilisk module
         self.lander.ModelTag = name             # Tag the spacecraft with a name
         self.sampling_ns = sampling_ns
@@ -30,13 +31,17 @@ class Vehicle:
         # Add sensors to spacecraft
         self.SM.add_imu("IMU", self.lander.scStateOutMsg)
         self.SM.add_star_tracker("ST", self.lander.scStateOutMsg)
+        self.SM.altimeter = MPE.initialize_mujoco()                         #initialize mujoco so we can set up the altimeter
+        self.SM.add_altimeter(self.SM.altimeter,self.lander.scStateOutMsg)
+
 
         self.SM.register_to_task(self.sim, "record")  # Register task to the simulation environment
-
         sc_recorder = self.lander.scStateOutMsg.recorder()
         self.sim.AddModelToTask("record", sc_recorder)
 
         self.sc_recorder = sc_recorder
+
+
 
     def initialize_recorder(self,sim):
         """
@@ -73,6 +78,13 @@ class Vehicle:
                 for field in st.fields
             }
 
+        alt_output = {}
+        for name, alt in self.altimeters.items():
+            alt_output[name] = {
+                "timeTag": alt.recorder.timeTag,
+                "altitude": alt.recorder.r_BN_N,
+            }
+
 
 
 
@@ -80,6 +92,7 @@ class Vehicle:
         return {
             "imu": imu_output,
             "star_tracker": st_output,
+            "altimeter": alt_output,
             "true_data": self.lander_true_status()
         }
 
