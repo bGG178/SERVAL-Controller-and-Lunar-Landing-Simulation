@@ -2,26 +2,32 @@ from Basilisk.utilities import macros, simIncludeGravBody
 from Basilisk.utilities import orbitalMotion
 from typing import Dict
 
-DEBUG_DISABLE_GRAVITY= False
-
-r_moon = 1737400 #radius of the moon in meters
+DEBUG_DISABLE_GRAVITY= True
+r_moon = 1737400  # radius of the moon in meters
 mu_moon = 4.9048695e12  # meters^3/s^2
-mu_earth = 0.3986004415E+15 #meters^3/s^2
-r_earth = 6378136.6 #meters^3/s^2
+mu_earth = 0.3986004415E+15  # meters^3/s^2
+r_earth = 6378136.6  # meters^3/s^2
+
+if DEBUG_DISABLE_GRAVITY == True:
+    print("GRAVITY IS CURRENTLY DISABLED!")
+
 
 
 def initialize_dynamics(sim, sc):
     gravFactory = simIncludeGravBody.gravBodyFactory()
     gravFactory.createSun()
 
-    if DEBUG_DISABLE_GRAVITY == True:
-        mu_moon = 0
-        mu_earth = 0
+    mu_moonL = r_moon
+    mu_earthL = mu_earth
 
-    moon = gravFactory.createCustomGravObject("moon", mu_moon, radEquator=r_moon)
+    if DEBUG_DISABLE_GRAVITY == True:
+        mu_moonL = 0
+        mu_earthL = 0
+
+    moon = gravFactory.createCustomGravObject("moon", mu_moonL, radEquator=r_moon)
     moon.isCentralBody= True
 
-    earth = gravFactory.createCustomGravObject("earth",mu_earth, radEquator=r_earth)
+    earth = gravFactory.createCustomGravObject("earth",mu_earthL, radEquator=r_earth)
     earth.isCentralBody = False
 
     timeInitString = "2026 JUL 28 00:00:00.0"
