@@ -6,33 +6,49 @@ import math as mat
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import PillowWriter
-from Basilisk.utilities import SimulationBaseClass, macros
+from Basilisk.utilities import SimulationBaseClass, macros, RigidBodyKinematics
 from Sensors.Sensors import SensorsManager
 import Environment.Dynamics as Dynamics
 from Visualization import initialize_vizard
+from Environment import Environment as Env
+
+
 
 matplotlib.use("TkAgg")
 
+CLOSE_TO_LUNAR_SURFACE = True #Turn to False if you want orbital, turn to true if you want suborbital. This only controls the visualization
+                                # If True-> Moon visualization shrunk to avoid visual clipping with the lunar terrain OBJ
+                                # If False-> Moon visualization not shrunk, leads to clipping if close to surface of both lunar terrain obj and spacecraft.
+LOW_FIDELITY_SURFACE = 1 #If CLOSE_TO_LUNAR_SURFACE is false, you may want this setting to be 0 or 2, as you will quickly pass over the lunar surface texture, and the altimeter will stop working
+                        # Setting 0-> Creates a smooth sphere mesh for the altimeter raycast collision
+                        # Setting 1-> Creates a lunar terrain obj only, currently at the lunar south pole only
+                        # Setting 2-> Creates both a smooth sphere mesh and lunar terrain obj, but this is UNTESTED and may result in unintended clipping when points on the OBJ are below lunar sea level
+DISABLE_GRAVITY = False #True -> Turns off all gravity with the exception of the sun.
 
-runtime = 2000.0 #how long to run the simulation for, in seconds
-samp = 0.15 #sampling rate, ie how often to take measurements, in seconds
+
+runtime = 100.0 #how long to run the simulation for, in seconds
+samp = 0.05 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment
 
 orbital_parameters = {
-            "altitude": 10000.0, # Will define orbit Semi-major axis (m). Takes the moon radius + altitude to define it
+            "altitude": 100.0, # Will define orbit Semi-major axis (m). Takes the moon radius + altitude to define it
             "eccentricity": 0.0, # Eccentricity (0 = circular orbit, 0 < e < 1 = elliptical)
             "inclination deg": 0.0, # Inclination (rad)
             "right ascension of ascending node deg": 0.0, # Right Ascension of the Ascending Node (RAAN) (rad)
             "argument of periapsis deg": 0.0, # Argument of Periapsis (rad)
-            "true anomaly": 90.0, # True Anomaly (rad)
+            "true anomaly": -90.0, # True Anomaly (rad)
         }
 
-spacecraft_velocity_override = [1, 0, 0] #If you wanted, for example, not an orbit at all, you would just put this to [0, 0, 0] and it would just fall from altitude (defined in orbital_parameters) down to the surface of the moon. Although collision isnt a thing yet so itll freak out when it gets to the surface
-spacecraft_position_override = None #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
 
-spacecraft_attitude_MRP = [[0.0], [0.0], [0.0]] #Starting attitude of spacecraft with respect to the body and inertial frame as a modified rodrigues parameter  (N->P)
-spacecraft_attitude_rate = [[0.00], [0.0], [0.0]]  # Current angular velocity with body frame relative to inertial frame (rad/s)
+spacecraft_velocity_override = [0, -10, 0] #If you wanted, for example, not an orbit at all, you would just put this to [0, 0, 0] and it would just fall from altitude (defined in orbital_parameters) down to the surface of the moon. Although collision isnt a thing yet so itll freak out when it gets to the surface
+spacecraft_position_override = [0,-1739900.0,0] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
+
+
+mrp1, mrp2, mrp3 = RigidBodyKinematics.euler3212MRP(np.deg2rad([0.0, 0.0, 90.0])) #input as degrees here for spacecraft rotation!
+
+spacecraft_attitude_MRP = [[mrp1], [mrp2], [mrp3]] #Starting attitude of spacecraft with respect to the body and inertial frame as a modified rodrigues parameter  (N->P)
+spacecraft_attitude_rate = [[0.0], [0.0], [0.0]]  # Current angular velocity with body frame relative to inertial frame (rad/s)
 spacecraft_mass = 2120.0                    #kg, not sure yet how to deal with CoM or where that is defined
 
 
@@ -50,13 +66,17 @@ sc.lander.hub.sigma_BNInit = spacecraft_attitude_MRP
 sc.lander.hub.omega_BN_BInit = spacecraft_attitude_rate
 sc.lander.hub.mHub = spacecraft_mass                    #CoM currently undefined to my knowledge
 
+sc.terrain = Env.create_terrain_spacecraft()  #Must happen before sc.initialize_sensors()
+
 SM = SensorsManager(sc, sampling_ns)                                #initialize the sensors manager
 
-sc.initialize_sensors(SM)                                   #attach sensors to vehicle
+sc.initialize_sensors(SM,LOW_FIDELITY_SURFACE)                                   #attach sensors to vehicle and set up mujoco physics for the altimeter sensor
+
+
 
 #Gravity Model
 
-Dynamics.initialize_dynamics(sim, sc)
+Dynamics.initialize_dynamics(sim, sc,DISABLE_GRAVITY,CLOSE_TO_LUNAR_SURFACE)
 Dynamics.initialize_vehicle_dynamics_parameters(sc, orbital_parameters, spacecraft_velocity_override, spacecraft_position_override)
 sc.initialize_recorder(sim)
 

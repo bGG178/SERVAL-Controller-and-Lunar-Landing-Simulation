@@ -1,19 +1,15 @@
 import os
 from Basilisk.utilities import vizSupport
-
-
+import Spacecraft.Mujoco.MujocoPhysicsEngine as MPE
 def initialize_vizard(sim, sc):
-
-    """
-    Start Vizard visualization.
-    """
 
     if vizSupport.vizFound:
 
+        # Create Vizard with both the real spacecraft and terrain
         viz = vizSupport.enableUnityVisualization(
             sim,
             "record",
-            sc.lander,
+            [sc.lander, sc.terrain],
             saveFile=__file__,
         )
 
@@ -24,10 +20,7 @@ def initialize_vizard(sim, sc):
 
         vizSupport.setActuatorGuiSetting(viz)
 
-        # ---------------------------------------------------------
-        # Spacecraft
-        # ---------------------------------------------------------
-
+        # Real spacecraft model
         model_path = os.path.abspath(
             os.path.join("Spacecraft", "IM1.obj")
         )
@@ -35,15 +28,13 @@ def initialize_vizard(sim, sc):
         vizSupport.createCustomModel(
             viz,
             model_path,
+            simBodiesToModify=[sc.lander.ModelTag],
             offset=[0.73, -0.73, -1.05],
             scale=[0.0004, 0.0004, 0.0004]
         )
 
-        # ---------------------------------------------------------
-        # South Pole terrain
-        # ---------------------------------------------------------
-
-        south_pole_path = os.path.abspath(
+        # Lunar terrain model
+        terrain_path = os.path.abspath(
             os.path.join(
                 "Environment",
                 "Objects",
@@ -53,7 +44,22 @@ def initialize_vizard(sim, sc):
 
         vizSupport.createCustomModel(
             viz,
-            south_pole_path,
-            offset=[100, 0, 0],
-            scale=[1, 1, 1]
+            terrain_path,
+            simBodiesToModify=[sc.terrain.ModelTag],
+            offset=[0.0, 0.0, 0.0],
+            rotation=MPE.TERRAIN_ROTATION_VIZARD,
+            scale=MPE.TERRAIN_SCALE
         )
+
+        print([
+            x for x in dir(viz.settings)
+            if "planet" in x.lower()
+               or "celestial" in x.lower()
+               or "moon" in x.lower()
+        ])
+
+        viz.settings.forceStartAtSpacecraftLocalView = 1
+
+        viz.settings.scViewToPlanetViewBoundaryMultiplier = 10
+        viz.settings.planetViewToHelioViewBoundaryMultiplier = 10
+

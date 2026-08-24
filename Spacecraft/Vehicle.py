@@ -1,5 +1,5 @@
 from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, unitTestSupport
-from Basilisk.simulation import spacecraft
+from Basilisk.simulation import spacecraft, extForceTorque
 from Mujoco import MujocoPhysicsEngine as MPE
 
 class Vehicle:
@@ -10,6 +10,11 @@ class Vehicle:
         self.lander = spacecraft.Spacecraft()        # Create a spacecraft instance from the spacecraft basilisk module
         self.lander.ModelTag = name             # Tag the spacecraft with a name
         self.sampling_ns = sampling_ns
+        self.terrain = None
+
+        # External force/torque module
+        self.contact_force = extForceTorque.ExtForceTorque()
+        self.contact_force.ModelTag = "TerrainContactForce"
 
 
 
@@ -25,19 +30,25 @@ class Vehicle:
 
 
 
-    def initialize_sensors(self, SM):
+    def initialize_sensors(self, SM, LF:int):
         self.SM = SM
 
         # Add sensors to spacecraft
         self.SM.add_imu("IMU", self.lander.scStateOutMsg)
         self.SM.add_star_tracker("ST", self.lander.scStateOutMsg)
-        self.SM.altimeter = MPE.initialize_mujoco()                         #initialize mujoco so we can set up the altimeter
+        self.SM.altimeter = MPE.initialize_mujoco(LF)
+
         self.SM.add_altimeter(self.SM.altimeter,self.lander.scStateOutMsg)
+
+        # Connect MuJoCo collision force to Basilisk
+        self.contact_force.cmdForceBodyInMsg.subscribeTo(self.SM.altimeter.forceOutMsg)
 
 
         self.SM.register_to_task(self.sim, "record")  # Register task to the simulation environment
         sc_recorder = self.lander.scStateOutMsg.recorder()
         self.sim.AddModelToTask("record", sc_recorder)
+        self.sim.AddModelToTask("record", self.terrain)
+        self.sim.AddModelToTask("record", self.contact_force)
 
         self.sc_recorder = sc_recorder
 

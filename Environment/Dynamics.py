@@ -2,29 +2,31 @@ from Basilisk.utilities import macros, simIncludeGravBody
 from Basilisk.utilities import orbitalMotion
 from typing import Dict
 
-DEBUG_DISABLE_GRAVITY= True
 r_moon = 1737400  # radius of the moon in meters
 mu_moon = 4.9048695e12  # meters^3/s^2
 mu_earth = 0.3986004415E+15  # meters^3/s^2
 r_earth = 6378136.6  # meters^3/s^2
 
-if DEBUG_DISABLE_GRAVITY == True:
-    print("GRAVITY IS CURRENTLY DISABLED!")
 
 
 
-def initialize_dynamics(sim, sc):
+
+def initialize_dynamics(sim, sc,DEBUG_DISABLE_GRAVITY = False, CLOSE=False):
     gravFactory = simIncludeGravBody.gravBodyFactory()
     gravFactory.createSun()
 
-    mu_moonL = r_moon
+    mu_moonL = mu_moon
     mu_earthL = mu_earth
 
     if DEBUG_DISABLE_GRAVITY == True:
+        print("GRAVITY IS CURRENTLY DISABLED!")
         mu_moonL = 0
         mu_earthL = 0
 
-    moon = gravFactory.createCustomGravObject("moon", mu_moonL, radEquator=r_moon)
+    if CLOSE:
+        moon = gravFactory.createCustomGravObject("moon", mu_moonL, radEquator=10000) # Make lunar texture small
+    else:
+        moon = gravFactory.createCustomGravObject("moon", mu_moonL, radEquator=r_moon) #Normal lunar texture
     moon.isCentralBody= True
 
     earth = gravFactory.createCustomGravObject("earth",mu_earthL, radEquator=r_earth)

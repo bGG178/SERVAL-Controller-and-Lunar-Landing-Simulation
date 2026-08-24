@@ -20,12 +20,14 @@ class LaserAltimeter(sysModel.SysModel):
         self.model = model
         self.data = data
         self.laser_id = laser_id
+        self.spacecraft_geom_id = 1
 
         # Basilisk input: spacecraft state
         self.scStateInMsg = messaging.SCStatesMsgReader()
 
         # Basilisk output: NavTransMsg
         self.sensorOutMsg = messaging.NavTransMsg()
+        self.forceOutMsg = messaging.CmdForceBodyMsg() #For the contact collision
 
         # Sensor outputs
         self.altitude = np.nan
@@ -35,6 +37,22 @@ class LaserAltimeter(sysModel.SysModel):
         self.fields = ["timeTag", "r_BN_N", "v_BN_N"]
 
         self.recorder = None
+        self.collision = False
+        self.contact_force_mjc = np.zeros(3)
+        self.contact_point_mjc = np.zeros(3)
+        self.contact_normal_mjc = np.zeros(3)
+        self.penetration = 0.0
+
+        self.spacecraft_body_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            "spacecraft"
+        )
+
+        self.spacecraft_mocap_id = model.body_mocapid[
+            self.spacecraft_body_id
+        ]
+
 
     # ======================================================================
     # Reset() — called once when the module is added to the simulation
@@ -64,97 +82,145 @@ class LaserAltimeter(sysModel.SysModel):
     # ======================================================================
     def UpdateState(self, CurrentSimNanos):
 
-        # --------------------------------------------------
-        # CONSTANTS
-        # --------------------------------------------------
+        # ==============================================================
+        # 1. BASILISK → MUJOCO FRAME
+        # ==============================================================
 
-        # Basilisk → MuJoCo rotation matrix
-        # Basilisk gravity = +Y
-        # MuJoCo gravity = -Z
         R_bsk_to_mjc = np.array([
-            [1, 0, 0],  # X stays X
-            [0, 0, 1],  # Z_bsk → Y_mjc
-            [0, 1, 0]  # Y_bsk → Z_mjc
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0]
         ])
 
-        # --------------------------------------------------
-        # 1. Read spacecraft state from Basilisk
-        # --------------------------------------------------
+        R_mjc_to_bsk = R_bsk_to_mjc.T
+
+        # ==============================================================
+        # 2. READ BASILISK STATE
+        # ==============================================================
+
         scState = self.scStateInMsg()
-        r_BN_N = np.array(scState.r_BN_N)  # Basilisk inertial position
-        sigma_BN = np.array(scState.sigma_BN)  # Basilisk attitude (MRP)
 
+        r_BN_N = np.array(scState.r_BN_N, dtype=float)
+        v_BN_N = np.array(scState.v_BN_N, dtype=float)
+        sigma_BN = np.array(scState.sigma_BN, dtype=float)
 
+        # ==============================================================
+        # 3. POSITION
+        # ==============================================================
 
-        # --------------------------------------------------
-        # 2. Convert Basilisk attitude → MuJoCo quaternion
-        # --------------------------------------------------
-        C_bsk = RigidBodyKinematics.MRP2C(sigma_BN)
-        C_mjc = R_bsk_to_mjc @ C_bsk @ R_bsk_to_mjc.T
-        q_mjc = RigidBodyKinematics.C2EP(C_mjc)
-
-        # --------------------------------------------------
-        # 3. Convert Basilisk position → MuJoCo world frame
-        # --------------------------------------------------
-        # Basilisk altitude is in Y
-        alt_bsk = r_BN_N[1]
-
-        # Rotate Basilisk inertial → MuJoCo world
         r_mjc = R_bsk_to_mjc @ r_BN_N
 
-        # Compute altitude from rotated Z
-        alt_mjc = r_mjc[2]
+        self.data.mocap_pos[
+            self.spacecraft_mocap_id
+        ] = r_mjc
 
-        # Write MuJoCo world position
-        self.data.qpos[0] = r_mjc[0]
-        self.data.qpos[1] = r_mjc[1]
-        self.data.qpos[2] = alt_mjc
+        # ==============================================================
+        # 4. ATTITUDE
+        # ==============================================================
 
-        self.data.qpos[3:7] = q_mjc
+        C_bsk = RigidBodyKinematics.MRP2C(sigma_BN)
 
+        C_mjc = (
+                R_bsk_to_mjc
+                @ C_bsk
+                @ R_bsk_to_mjc.T
+        )
 
+        q_mjc = RigidBodyKinematics.C2EP(C_mjc)
 
-        # --------------------------------------------------
-        # 4. Forward MuJoCo state
-        # --------------------------------------------------
-        mujoco.mj_forward(self.model, self.data)
+        self.data.mocap_quat[
+            self.spacecraft_mocap_id
+        ] = q_mjc
 
-        # --------------------------------------------------
-        # 5. Perform laser raycast
-        # --------------------------------------------------
+        # ==============================================================
+        # 5. VELOCITY
+        # ==============================================================
+
+        v_mjc = R_bsk_to_mjc @ v_BN_N
+
+        # ==============================================================
+        # 6. UPDATE MUJOCO
+        # ==============================================================
+
+        mujoco.mj_forward(
+            self.model,
+            self.data
+        )
+        print("MUJOCO CONTACTS:", self.data.ncon)
+
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+
+            print(
+                f"Contact {i}: "
+                f"geom1={contact.geom1}, "
+                f"geom2={contact.geom2}, "
+                f"dist={contact.dist}"
+            )
+
+        # ==============================================================
+        # 7. CHECK CONTACT
+        # ==============================================================
+
+        self.check_collision()
+
+        # ==============================================================
+        # 8. GET MUJOCO CONTACT FORCE
+        # ==============================================================
+
+        F_mjc = self.get_mujoco_contact_force()
+
+        # ==============================================================
+        # 9. MUJOCO → BASILISK
+        # ==============================================================
+
+        F_bsk = R_mjc_to_bsk @ F_mjc
+
+        # ==============================================================
+        # 10. PUBLISH FORCE
+        # ==============================================================
+
+        force_payload = self.forceOutMsg.zeroMsgPayload
+
+        force_payload.forceRequestBody = [
+            F_bsk[0],
+            F_bsk[1],
+            F_bsk[2]
+        ]
+
+        self.forceOutMsg.write(
+            force_payload,
+            CurrentSimNanos,
+            self.moduleID
+        )
+
+        # ==============================================================
+        # 11. LASER ALTIMETER
+        # ==============================================================
+
         self.altitude, self.hit_geom = self.laser_altimeter()
 
-        # --------------------------------------------------
-        # 6. Publish Basilisk message
-        # --------------------------------------------------
         payload = self.sensorOutMsg.zeroMsgPayload
+
         payload.timeTag = CurrentSimNanos
-        payload.r_BN_N = [0.0, 0.0, self.altitude]
-        payload.v_BN_N = [0.0, 0.0, 0.0]
 
-        self.sensorOutMsg.write(payload, CurrentSimNanos, self.moduleID)
+        payload.r_BN_N = [
+            0.0,
+            0.0,
+            self.altitude
+        ]
 
-        # --------------------------------------------------
-        # 7. Debug print
-        # --------------------------------------------------
-        if self.hit_geom == -1:
-            pass
-            #print(f"t={CurrentSimNanos * 1e-9:.3f}s | Laser: NO RETURN\n")
-        else:
-            print(
-                f"t={CurrentSimNanos * 1e-9:.3f}s | "
-                f"Altitude={self.altitude:.3f} m | Hit geom={self.hit_geom}"
+        payload.v_BN_N = [
+            0.0,
+            0.0,
+            0.0
+        ]
 
-            )
-            # Debug
-            #print(
-            #    f"t={CurrentSimNanos * 1e-9:.3f} | "
-            #    f"r = {scState.r_BN_N} | "
-            #    f"v = {scState.v_BN_N}"
-            #)
-            print(f"Basilisk Y (alt) = {r_BN_N[1]:.3f} | MuJoCo Z = {self.data.qpos[2]:.3f}")
-            print(f"Ray origin Z = {self.data.site_xpos[self.laser_id][2]:.3f}\n")
-
+        self.sensorOutMsg.write(
+            payload,
+            CurrentSimNanos,
+            self.moduleID
+        )
     # ======================================================================
     # MuJoCo raycast
     # ======================================================================
@@ -187,3 +253,102 @@ class LaserAltimeter(sysModel.SysModel):
         )
 
         return distance, geom_id[0]
+
+    def check_collision(self):
+
+        self.collision = False
+        self.contact_force_mjc[:] = 0.0
+        self.contact_point_mjc[:] = 0.0
+        self.contact_normal_mjc[:] = 0.0
+        self.penetration = 0.0
+
+        for i in range(self.data.ncon):
+
+            contact = self.data.contact[i]
+
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+
+            name1 = mujoco.mj_id2name(
+                self.model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                geom1
+            )
+
+            name2 = mujoco.mj_id2name(
+                self.model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                geom2
+            )
+
+            # We only care about spacecraft ↔ terrain
+            spacecraft_contact = (
+                    name1 == "spacecraft_body"
+                    or name2 == "spacecraft_body"
+            )
+
+            if not spacecraft_contact:
+                continue
+
+            self.collision = True
+
+            self.contact_point_mjc = contact.pos.copy()
+
+            # Contact frame's first axis is the contact normal
+            self.contact_normal_mjc = contact.frame[:3].copy()
+
+            # Negative distance means penetration
+            self.penetration = max(0.0, -contact.dist)
+
+            break
+
+    def get_mujoco_contact_force(self):
+
+        F_mjc = np.zeros(3)
+
+        # No contacts
+        if self.data.ncon == 0:
+            return F_mjc
+
+        for i in range(self.data.ncon):
+
+            contact = self.data.contact[i]
+
+            # Get the two geoms involved
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+
+            # Only consider contacts involving the spacecraft
+            if (
+                    geom1 != self.spacecraft_geom_id
+                    and
+                    geom2 != self.spacecraft_geom_id
+            ):
+                continue
+
+            # MuJoCo contact force
+            contact_force = np.zeros(6)
+
+            mujoco.mj_contactForce(
+                self.model,
+                self.data,
+                i,
+                contact_force
+            )
+
+            # First 3 values are force in the contact frame
+            force_contact = contact_force[:3]
+
+            # contact.frame is a 3x3 rotation matrix stored flat
+            frame = contact.frame.reshape(3, 3)
+
+            # Convert contact-frame force → MuJoCo world frame
+            force_world = frame.T @ force_contact
+
+            # Make sure the force points ON the spacecraft
+            if geom2 == self.spacecraft_geom_id:
+                force_world *= -1.0
+
+            F_mjc += force_world
+
+        return F_mjc
