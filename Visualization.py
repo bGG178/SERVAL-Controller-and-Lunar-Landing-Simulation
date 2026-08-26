@@ -1,6 +1,6 @@
 import os
 from Basilisk.utilities import vizSupport
-import Spacecraft.Mujoco.MujocoPhysicsEngine as MPE
+import Spacecraft.Mujoco.FrameTransforms as TerrainFrame
 def initialize_vizard(sim, sc):
 
     if vizSupport.vizFound:
@@ -47,16 +47,9 @@ def initialize_vizard(sim, sc):
             terrain_path,
             simBodiesToModify=[sc.terrain.ModelTag],
             offset=[0.0, 0.0, 0.0],
-            rotation=MPE.TERRAIN_ROTATION_VIZARD,
-            scale=MPE.TERRAIN_SCALE
+            rotation=TerrainFrame.TERRAIN_ROTATION_VIZARD,
+            scale=TerrainFrame.TERRAIN_SCALE
         )
-
-        print([
-            x for x in dir(viz.settings)
-            if "planet" in x.lower()
-               or "celestial" in x.lower()
-               or "moon" in x.lower()
-        ])
 
         viz.settings.forceStartAtSpacecraftLocalView = 1
 

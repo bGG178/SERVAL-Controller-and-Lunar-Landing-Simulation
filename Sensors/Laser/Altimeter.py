@@ -3,6 +3,7 @@ import mujoco
 import numpy as np
 from Basilisk.architecture import messaging, sysModel, bskLogging
 from Basilisk.utilities import RigidBodyKinematics
+from Spacecraft.Mujoco.FrameTransforms import R_BSK_TO_MUJOCO, R_MUJOCO_TO_BSK
 
 class LaserAltimeter(sysModel.SysModel):
     """
@@ -20,7 +21,11 @@ class LaserAltimeter(sysModel.SysModel):
         self.model = model
         self.data = data
         self.laser_id = laser_id
-        self.spacecraft_geom_id = 1
+        self.spacecraft_geom_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_GEOM,
+            "spacecraft_body"
+        )
 
         # Basilisk input: spacecraft state
         self.scStateInMsg = messaging.SCStatesMsgReader()
@@ -49,9 +54,20 @@ class LaserAltimeter(sysModel.SysModel):
             "spacecraft"
         )
 
+        if self.spacecraft_geom_id < 0:
+            raise RuntimeError("MuJoCo model is missing geom 'spacecraft_body'.")
+        if self.spacecraft_body_id < 0:
+            raise RuntimeError("MuJoCo model is missing body 'spacecraft'.")
+
         self.spacecraft_mocap_id = model.body_mocapid[
             self.spacecraft_body_id
         ]
+
+        if self.spacecraft_mocap_id < 0:
+            raise RuntimeError(
+                "MuJoCo body 'spacecraft' must be mocap='true' because "
+                "Basilisk is the spacecraft dynamics source."
+            )
 
 
     # ======================================================================
@@ -86,13 +102,8 @@ class LaserAltimeter(sysModel.SysModel):
         # 1. BASILISK → MUJOCO FRAME
         # ==============================================================
 
-        R_bsk_to_mjc = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, 1.0, 0.0]
-        ])
-
-        R_mjc_to_bsk = R_bsk_to_mjc.T
+        R_bsk_to_mjc = R_BSK_TO_MUJOCO
+        R_mjc_to_bsk = R_MUJOCO_TO_BSK
 
         # ==============================================================
         # 2. READ BASILISK STATE
@@ -118,11 +129,12 @@ class LaserAltimeter(sysModel.SysModel):
         # 4. ATTITUDE
         # ==============================================================
 
-        C_bsk = RigidBodyKinematics.MRP2C(sigma_BN)
+        C_BN = RigidBodyKinematics.MRP2C(sigma_BN)
+        C_NB = C_BN.T
 
         C_mjc = (
                 R_bsk_to_mjc
-                @ C_bsk
+                @ C_NB
                 @ R_bsk_to_mjc.T
         )
 
@@ -146,17 +158,6 @@ class LaserAltimeter(sysModel.SysModel):
             self.model,
             self.data
         )
-        print("MUJOCO CONTACTS:", self.data.ncon)
-
-        for i in range(self.data.ncon):
-            contact = self.data.contact[i]
-
-            print(
-                f"Contact {i}: "
-                f"geom1={contact.geom1}, "
-                f"geom2={contact.geom2}, "
-                f"dist={contact.dist}"
-            )
 
         # ==============================================================
         # 7. CHECK CONTACT
@@ -231,6 +232,12 @@ class LaserAltimeter(sysModel.SysModel):
 
         direction = rotation[:, 2].copy()
         direction /= np.linalg.norm(direction)
+
+        local_down = -origin
+        local_down /= np.linalg.norm(local_down)
+
+        if np.dot(direction, local_down) <= 0.0:
+            return -1.0, -1
 
         geomgroup = np.ones(6, dtype=np.uint8)
         geom_id = np.array([-1], dtype=np.int32)

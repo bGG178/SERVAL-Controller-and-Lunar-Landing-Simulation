@@ -41,8 +41,8 @@ orbital_parameters = {
         }
 
 
-spacecraft_velocity_override = [0, -10, 0] #If you wanted, for example, not an orbit at all, you would just put this to [0, 0, 0] and it would just fall from altitude (defined in orbital_parameters) down to the surface of the moon. Although collision isnt a thing yet so itll freak out when it gets to the surface
-spacecraft_position_override = [0,-1739900.0,0] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
+spacecraft_velocity_override = [0, 0, 0] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
+spacecraft_position_override = [0,-1737500.0,0] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
 
 
 mrp1, mrp2, mrp3 = RigidBodyKinematics.euler3212MRP(np.deg2rad([0.0, 0.0, 90.0])) #input as degrees here for spacecraft rotation!

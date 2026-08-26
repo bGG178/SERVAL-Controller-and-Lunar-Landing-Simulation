@@ -1,7 +1,12 @@
 import mujoco
 import numpy as np
-from scipy.spatial.transform import Rotation
 from Sensors.Laser.Altimeter import LaserAltimeter
+from Spacecraft.Mujoco.FrameTransforms import (
+    MOON_RADIUS,
+    TERRAIN_POSITION_MUJOCO,
+    TERRAIN_ROTATION_MUJOCO,
+    TERRAIN_SCALE,
+)
 
 
 OBJ_PATH = "Environment/Objects/SouthPole.obj"
@@ -77,24 +82,8 @@ def clean_obj(obj_path):
     return "".join(output).encode("utf-8")
 
 
-MOON_RADIUS = 1737400.0
-
-TERRAIN_ROTATION_MUJOCO = [90.0, 90.0, 0.0]
-
-# Convert MuJoCo XYZ Euler rotation to Vizard 3-2-1 Euler angles
-TERRAIN_ROTATION_VIZARD = (
-    Rotation.from_euler(
-        "xyz",
-        TERRAIN_ROTATION_MUJOCO,
-        degrees=True
-    )
-    .as_euler(
-        "zyx",
-        degrees=False
-    )[::-1]
-    .tolist()
-)
-TERRAIN_SCALE = [10.0, 10.0, 10.0]
+def _xml_vec(values):
+    return " ".join(str(float(value)) for value in values)
 
 
 def initialize_mujoco(LF:int):
@@ -103,7 +92,34 @@ def initialize_mujoco(LF:int):
         "Environment/Objects/SouthPole.obj"
     )
 
-    if LF==0: #Creates a sphere for the altimeter instead of lunar terrain obj
+    XML= get_xml(LF)
+
+    model = mujoco.MjModel.from_xml_string(
+        XML,
+        assets={
+            "SouthPole.obj": obj_data
+        }
+    )
+
+    data = mujoco.MjData(model)
+
+    laser_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_SITE,
+        "laser_altimeter"
+    )
+
+    altimeter = LaserAltimeter(
+        model,
+        data,
+        laser_id
+    )
+
+    return altimeter
+
+
+def get_xml(LF):
+    if LF == 0:  # Creates a sphere for the altimeter instead of lunar terrain obj
         XML = f"""
             <mujoco model="laser_altimeter">
 
@@ -117,9 +133,7 @@ def initialize_mujoco(LF:int):
                           size="{MOON_RADIUS}"
                           pos="0 0 0"/>
 
-                    <body name="spacecraft" pos="0 0 {MOON_RADIUS + 1500}">
-
-                        <freejoint/>
+                    <body name="spacecraft" mocap="true" pos="0 0 {MOON_RADIUS + 1500}">
 
                         <geom name="spacecraft_body"
                               type="box"
@@ -136,63 +150,67 @@ def initialize_mujoco(LF:int):
 
             </mujoco>
             """
-    elif LF==1: #Use lunar terrain OBJ
+    elif LF == 1:  # Use lunar terrain OBJ
         XML = f"""
-        <mujoco model="laser_altimeter">
-    
+         <mujoco model="laser_altimeter">
+
+            <compiler
+                meshdir="."
+                usethread="true"
+            />
+
+            <size
+                memory="1G"
+            />
+
             <asset>
-                <mesh name="south_pole"
+                <mesh name="lunarTerrain"
                       file="SouthPole.obj"
-                      scale="{TERRAIN_SCALE[0]}
-                             {TERRAIN_SCALE[1]}
-                             {TERRAIN_SCALE[2]}"/>
+                      scale="{_xml_vec(TERRAIN_SCALE)}"
+                      maxhullvert="1000"/>
             </asset>
-    
+
             <option gravity="0 0 -9.81"/>
-            <statistic extent="500000"/>
-    
+
+            <statistic extent="50000"/>
+
             <worldbody>
-    
-                <geom name="south_pole"
+
+                <geom name="lunarTerrain_geom"
                       type="mesh"
-                      mesh="south_pole"
-                      pos="0 0 {-MOON_RADIUS}"
-                      euler="{TERRAIN_ROTATION_MUJOCO[0]}
-                             {TERRAIN_ROTATION_MUJOCO[1]}
-                             {TERRAIN_ROTATION_MUJOCO[2]}"
-                     contype="1"
-                    conaffinity="1"/>
-    
+                      mesh="lunarTerrain"
+                      pos="{_xml_vec(TERRAIN_POSITION_MUJOCO)}"
+                      euler="{_xml_vec(TERRAIN_ROTATION_MUJOCO)}"
+                      contype="1"
+                      conaffinity="1"/>
+
                 <body name="spacecraft" mocap="true">
 
-    
                     <geom name="spacecraft_body"
                           type="box"
                           size="0.5 0.5 0.2"
                           contype="1"
-                            conaffinity="1"/>
-    
+                          conaffinity="1"/>
+
                     <site name="laser_altimeter"
                           pos="0 0 -0.2"
                           euler="90 0 0"
                           size="0.03"/>
-    
+
                 </body>
-    
+
             </worldbody>
-    
+
         </mujoco>
         """
-    else: #Use both a smooth spherical surface and lunar terrain obj
+    else:  # Use both a smooth spherical surface and lunar terrain obj
         XML = f"""
         <mujoco model="laser_altimeter">
 
             <asset>
                 <mesh name="south_pole"
                       file="SouthPole.obj"
-                      scale="{TERRAIN_SCALE[0]}
-                             {TERRAIN_SCALE[1]}
-                             {TERRAIN_SCALE[2]}"/>
+                      scale="{_xml_vec(TERRAIN_SCALE)}"/>
             </asset>
 
             <option gravity="0 0 0"/>
@@ -205,7 +223,7 @@ def initialize_mujoco(LF:int):
                       type="sphere"
                       size="{MOON_RADIUS}"
                       pos="0 0 0"
-                      
+
                       contype="1"
                         conaffinity="1"/>
 
@@ -213,10 +231,8 @@ def initialize_mujoco(LF:int):
                 <geom name="south_pole"
                       type="mesh"
                       mesh="south_pole"
-                      pos="0 0 {-MOON_RADIUS}"
-                      euler="{TERRAIN_ROTATION_MUJOCO[0]}
-                             {TERRAIN_ROTATION_MUJOCO[1]}
-                             {TERRAIN_ROTATION_MUJOCO[2]}"
+                      pos="{_xml_vec(TERRAIN_POSITION_MUJOCO)}"
+                      euler="{_xml_vec(TERRAIN_ROTATION_MUJOCO)}"
                     contype="1"
                      conaffinity="1"/>
 
@@ -240,33 +256,4 @@ def initialize_mujoco(LF:int):
 
         </mujoco>
         """
-
-    model = mujoco.MjModel.from_xml_string(
-        XML,
-        assets={
-            "SouthPole.obj": obj_data
-        }
-    )
-
-    data = mujoco.MjData(model)
-
-    laser_id = mujoco.mj_name2id(
-        model,
-        mujoco.mjtObj.mjOBJ_SITE,
-        "laser_altimeter"
-    )
-
-    altimeter = LaserAltimeter(
-        model,
-        data,
-        laser_id
-    )
-
-    spacecraft_geom_id = mujoco.mj_name2id(
-        model,
-        mujoco.mjtObj.mjOBJ_GEOM,
-        "spacecraft_body"
-    )
-    print(spacecraft_geom_id)
-
-    return altimeter
+    return XML

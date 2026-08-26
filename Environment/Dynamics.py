@@ -20,8 +20,8 @@ def initialize_dynamics(sim, sc,DEBUG_DISABLE_GRAVITY = False, CLOSE=False):
 
     if DEBUG_DISABLE_GRAVITY == True:
         print("GRAVITY IS CURRENTLY DISABLED!")
-        mu_moonL = 0
-        mu_earthL = 0
+        mu_moonL = 0.01
+        mu_earthL = 0.01
 
     if CLOSE:
         moon = gravFactory.createCustomGravObject("moon", mu_moonL, radEquator=10000) # Make lunar texture small

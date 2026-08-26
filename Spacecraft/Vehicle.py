@@ -1,6 +1,6 @@
 from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, unitTestSupport
 from Basilisk.simulation import spacecraft, extForceTorque
-from Mujoco import MujocoPhysicsEngine as MPE
+from Spacecraft.Mujoco import MujocoPhysicsEngine as MPE
 
 class Vehicle:
     def __init__(self, sim, name, sampling_ns=0.01):

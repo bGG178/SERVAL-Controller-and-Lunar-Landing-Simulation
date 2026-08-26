@@ -1,5 +1,6 @@
 import numpy as np
 from Basilisk.simulation import spacecraft
+from Spacecraft.Mujoco.FrameTransforms import TERRAIN_POSITION_BSK
 
 
 def create_terrain_spacecraft():
@@ -7,14 +8,7 @@ def create_terrain_spacecraft():
     terrain = spacecraft.Spacecraft()
     terrain.ModelTag = "lunarTerrain"
 
-    # Position of the lunar south pole in the Basilisk Moon-centered frame
-    MOON_RADIUS = 1737400.0
-
-    terrain.hub.r_CN_NInit = np.array([
-        0.0,
-        -MOON_RADIUS,
-        0.0
-    ])
+    terrain.hub.r_CN_NInit = TERRAIN_POSITION_BSK.copy()
 
     # Stationary
     terrain.hub.v_CN_NInit = np.array([
