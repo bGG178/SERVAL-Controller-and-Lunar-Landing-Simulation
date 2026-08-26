@@ -30,9 +30,10 @@ class LaserAltimeter(sysModel.SysModel):
         # Basilisk input: spacecraft state
         self.scStateInMsg = messaging.SCStatesMsgReader()
 
-        # Basilisk output: NavTransMsg
+        # Basilisk outputs
         self.sensorOutMsg = messaging.NavTransMsg()
-        self.forceOutMsg = messaging.CmdForceBodyMsg() #For the contact collision
+        self.forceOutMsg = messaging.CmdForceInertialMsg()
+        self.torqueOutMsg = messaging.CmdTorqueBodyMsg()
 
         # Sensor outputs
         self.altitude = np.nan
@@ -47,6 +48,15 @@ class LaserAltimeter(sysModel.SysModel):
         self.contact_point_mjc = np.zeros(3)
         self.contact_normal_mjc = np.zeros(3)
         self.penetration = 0.0
+        self.contact_margin = 0.25
+        self.contact_stiffness = 5.0e5
+        self.contact_damping = 8.0e4
+        self.contact_tangential_damping = 0.0
+        self.contact_friction_coefficient = 0.8
+        self.max_contact_force = 5.0e5
+        self.use_radial_contact_normal = True
+        self.apply_contact_torque = False
+        self.max_contact_torque = 2.0e3
 
         self.spacecraft_body_id = mujoco.mj_name2id(
             model,
@@ -59,15 +69,22 @@ class LaserAltimeter(sysModel.SysModel):
         if self.spacecraft_body_id < 0:
             raise RuntimeError("MuJoCo model is missing body 'spacecraft'.")
 
-        self.spacecraft_mocap_id = model.body_mocapid[
-            self.spacecraft_body_id
-        ]
-
-        if self.spacecraft_mocap_id < 0:
+        self.spacecraft_joint_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_JOINT,
+            "spacecraft_freejoint"
+        )
+        if self.spacecraft_joint_id < 0:
             raise RuntimeError(
-                "MuJoCo body 'spacecraft' must be mocap='true' because "
-                "Basilisk is the spacecraft dynamics source."
+                "MuJoCo model is missing joint 'spacecraft_freejoint'."
             )
+
+        self.spacecraft_qpos_adr = model.jnt_qposadr[
+            self.spacecraft_joint_id
+        ]
+        self.spacecraft_qvel_adr = model.jnt_dofadr[
+            self.spacecraft_joint_id
+        ]
 
 
     # ======================================================================
@@ -87,6 +104,12 @@ class LaserAltimeter(sysModel.SysModel):
         payload.v_BN_N = [0.0, 0.0, 0.0]
 
         self.sensorOutMsg.write(payload, CurrentSimNanos, self.moduleID)
+
+        self.publish_contact_loads(
+            np.zeros(3),
+            np.zeros(3),
+            CurrentSimNanos
+        )
 
         self.bskLogger.bskLog(
             bskLogging.BSK_INFORMATION,
@@ -114,6 +137,7 @@ class LaserAltimeter(sysModel.SysModel):
         r_BN_N = np.array(scState.r_BN_N, dtype=float)
         v_BN_N = np.array(scState.v_BN_N, dtype=float)
         sigma_BN = np.array(scState.sigma_BN, dtype=float)
+        omega_BN_B = np.array(scState.omega_BN_B, dtype=float)
 
         # ==============================================================
         # 3. POSITION
@@ -121,16 +145,13 @@ class LaserAltimeter(sysModel.SysModel):
 
         r_mjc = R_bsk_to_mjc @ r_BN_N
 
-        self.data.mocap_pos[
-            self.spacecraft_mocap_id
-        ] = r_mjc
-
         # ==============================================================
         # 4. ATTITUDE
         # ==============================================================
 
         C_BN = RigidBodyKinematics.MRP2C(sigma_BN)
         C_NB = C_BN.T
+        omega_BN_N = C_NB @ omega_BN_B
 
         C_mjc = (
                 R_bsk_to_mjc
@@ -140,15 +161,25 @@ class LaserAltimeter(sysModel.SysModel):
 
         q_mjc = RigidBodyKinematics.C2EP(C_mjc)
 
-        self.data.mocap_quat[
-            self.spacecraft_mocap_id
-        ] = q_mjc
-
         # ==============================================================
         # 5. VELOCITY
         # ==============================================================
 
         v_mjc = R_bsk_to_mjc @ v_BN_N
+        omega_mjc = R_bsk_to_mjc @ omega_BN_N
+
+        qpos_adr = self.spacecraft_qpos_adr
+        qvel_adr = self.spacecraft_qvel_adr
+
+        self.data.qpos[qpos_adr:qpos_adr + 3] = r_mjc
+        self.data.qpos[qpos_adr + 3:qpos_adr + 7] = q_mjc
+        self.data.qvel[qvel_adr:qvel_adr + 3] = v_mjc
+        self.data.qvel[qvel_adr + 3:qvel_adr + 6] = omega_mjc
+
+        mujoco.mj_normalizeQuat(
+            self.model,
+            self.data.qpos
+        )
 
         # ==============================================================
         # 6. UPDATE MUJOCO
@@ -166,37 +197,29 @@ class LaserAltimeter(sysModel.SysModel):
         self.check_collision()
 
         # ==============================================================
-        # 8. GET MUJOCO CONTACT FORCE
+        # 8. COMPUTE CONTACT LOADS
         # ==============================================================
 
-        F_mjc = self.get_mujoco_contact_force()
+        F_N, torque_B = self.get_contact_loads(
+            r_mjc,
+            v_mjc,
+            omega_mjc,
+            C_BN,
+            R_mjc_to_bsk
+        )
 
         # ==============================================================
         # 9. MUJOCO → BASILISK
         # ==============================================================
 
-        F_bsk = R_mjc_to_bsk @ F_mjc
-
-        # ==============================================================
-        # 10. PUBLISH FORCE
-        # ==============================================================
-
-        force_payload = self.forceOutMsg.zeroMsgPayload
-
-        force_payload.forceRequestBody = [
-            F_bsk[0],
-            F_bsk[1],
-            F_bsk[2]
-        ]
-
-        self.forceOutMsg.write(
-            force_payload,
-            CurrentSimNanos,
-            self.moduleID
+        self.publish_contact_loads(
+            F_N,
+            torque_B,
+            CurrentSimNanos
         )
 
         # ==============================================================
-        # 11. LASER ALTIMETER
+        # 10. LASER ALTIMETER
         # ==============================================================
 
         self.altitude, self.hit_geom = self.laser_altimeter()
@@ -308,6 +331,124 @@ class LaserAltimeter(sysModel.SysModel):
             self.penetration = max(0.0, -contact.dist)
 
             break
+
+    def get_contact_loads(self, r_spacecraft_mjc, v_spacecraft_mjc,
+                          omega_spacecraft_mjc,
+                          C_BN, R_mjc_to_bsk):
+
+        F_mjc = np.zeros(3)
+        torque_B = np.zeros(3)
+
+        for i in range(self.data.ncon):
+
+            contact = self.data.contact[i]
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+
+            if (
+                    geom1 != self.spacecraft_geom_id
+                    and
+                    geom2 != self.spacecraft_geom_id
+            ):
+                continue
+
+            normal_mjc = contact.frame[:3].copy()
+            normal_norm = np.linalg.norm(normal_mjc)
+            if normal_norm <= 0.0:
+                continue
+
+            normal_mjc /= normal_norm
+            if self.use_radial_contact_normal:
+                radial_norm = np.linalg.norm(r_spacecraft_mjc)
+                if radial_norm > 0.0:
+                    normal_mjc = r_spacecraft_mjc / radial_norm
+
+            contact_to_spacecraft = r_spacecraft_mjc - contact.pos
+            if np.dot(normal_mjc, contact_to_spacecraft) < 0.0:
+                normal_mjc *= -1.0
+
+            r_contact_from_com_mjc = contact.pos - r_spacecraft_mjc
+            contact_velocity_mjc = (
+                    v_spacecraft_mjc
+                    + np.cross(omega_spacecraft_mjc, r_contact_from_com_mjc)
+            )
+            normal_velocity = np.dot(contact_velocity_mjc, normal_mjc)
+            penetration = max(0.0, -contact.dist)
+            force_magnitude = max(
+                0.0,
+                self.contact_stiffness * penetration
+                - self.contact_damping * normal_velocity
+            )
+            force_magnitude = min(force_magnitude, self.max_contact_force)
+
+            force_mjc = force_magnitude * normal_mjc
+
+            tangential_velocity_mjc = (
+                    contact_velocity_mjc
+                    - normal_velocity * normal_mjc
+            )
+            tangential_speed = np.linalg.norm(tangential_velocity_mjc)
+            if tangential_speed > 0.0 and force_magnitude > 0.0:
+                tangential_force_mjc = (
+                        -self.contact_tangential_damping
+                        * tangential_velocity_mjc
+                )
+                tangential_force_limit = (
+                        self.contact_friction_coefficient
+                        * force_magnitude
+                )
+                tangential_force_norm = np.linalg.norm(tangential_force_mjc)
+                if tangential_force_norm > tangential_force_limit:
+                    tangential_force_mjc *= (
+                            tangential_force_limit
+                            / tangential_force_norm
+                    )
+                force_mjc += tangential_force_mjc
+
+            F_mjc += force_mjc
+
+            if self.apply_contact_torque:
+                r_contact_from_com_N = R_mjc_to_bsk @ r_contact_from_com_mjc
+                force_N = R_mjc_to_bsk @ force_mjc
+                torque_B += C_BN @ np.cross(r_contact_from_com_N, force_N)
+
+            self.collision = True
+            self.contact_force_mjc = force_mjc
+            self.contact_point_mjc = contact.pos.copy()
+            self.contact_normal_mjc = normal_mjc
+            self.penetration = penetration
+
+        torque_norm = np.linalg.norm(torque_B)
+        if torque_norm > self.max_contact_torque:
+            torque_B *= self.max_contact_torque / torque_norm
+
+        return R_mjc_to_bsk @ F_mjc, torque_B
+
+    def publish_contact_loads(self, force_N, torque_B, CurrentSimNanos):
+
+        force_payload = self.forceOutMsg.zeroMsgPayload
+        force_payload.forceRequestInertial = [
+            force_N[0],
+            force_N[1],
+            force_N[2]
+        ]
+        self.forceOutMsg.write(
+            force_payload,
+            CurrentSimNanos,
+            self.moduleID
+        )
+
+        torque_payload = self.torqueOutMsg.zeroMsgPayload
+        torque_payload.torqueRequestBody = [
+            torque_B[0],
+            torque_B[1],
+            torque_B[2]
+        ]
+        self.torqueOutMsg.write(
+            torque_payload,
+            CurrentSimNanos,
+            self.moduleID
+        )
 
     def get_mujoco_contact_force(self):
 

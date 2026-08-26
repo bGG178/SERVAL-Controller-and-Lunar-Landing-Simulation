@@ -131,13 +131,17 @@ def get_xml(LF):
                     <geom name="moon"
                           type="sphere"
                           size="{MOON_RADIUS}"
-                          pos="0 0 0"/>
+                          pos="0 0 0"
+                          margin="0.25"/>
 
-                    <body name="spacecraft" mocap="true" pos="0 0 {MOON_RADIUS + 1500}">
+                    <body name="spacecraft" pos="0 0 {MOON_RADIUS + 1500}">
+
+                        <freejoint name="spacecraft_freejoint"/>
 
                         <geom name="spacecraft_body"
                               type="box"
-                              size="0.5 0.5 0.2"/>
+                              size="0.5 0.5 0.2"
+                              margin="0.25"/>
 
                         <site name="laser_altimeter"
                               pos="0 0 -0.2"
@@ -182,15 +186,19 @@ def get_xml(LF):
                       pos="{_xml_vec(TERRAIN_POSITION_MUJOCO)}"
                       euler="{_xml_vec(TERRAIN_ROTATION_MUJOCO)}"
                       contype="1"
-                      conaffinity="1"/>
+                      conaffinity="1"
+                      margin="0.25"/>
 
-                <body name="spacecraft" mocap="true">
+                <body name="spacecraft">
+
+                    <freejoint name="spacecraft_freejoint"/>
 
                     <geom name="spacecraft_body"
                           type="box"
                           size="0.5 0.5 0.2"
                           contype="1"
-                          conaffinity="1"/>
+                          conaffinity="1"
+                          margin="0.25"/>
 
                     <site name="laser_altimeter"
                           pos="0 0 -0.2"
@@ -225,7 +233,8 @@ def get_xml(LF):
                       pos="0 0 0"
 
                       contype="1"
-                        conaffinity="1"/>
+                        conaffinity="1"
+                      margin="0.25"/>
 
                 <!-- Actual lunar terrain -->
                 <geom name="south_pole"
@@ -234,16 +243,20 @@ def get_xml(LF):
                       pos="{_xml_vec(TERRAIN_POSITION_MUJOCO)}"
                       euler="{_xml_vec(TERRAIN_ROTATION_MUJOCO)}"
                     contype="1"
-                     conaffinity="1"/>
+                     conaffinity="1"
+                      margin="0.25"/>
 
                 <!-- Spacecraft -->
-                <body name="spacecraft" mocap="true">
+                <body name="spacecraft">
+
+                    <freejoint name="spacecraft_freejoint"/>
 
                     <geom name="spacecraft_body"
                           type="box"
                           size="0.5 0.5 0.2"
                           contype="1"
-                          conaffinity="1"/>
+                          conaffinity="1"
+                          margin="0.25"/>
 
                     <site name="laser_altimeter"
                           pos="0 0 -0.2"
