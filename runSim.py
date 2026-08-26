@@ -26,7 +26,7 @@ LOW_FIDELITY_SURFACE = 1 #If CLOSE_TO_LUNAR_SURFACE is false, you may want this 
 DISABLE_GRAVITY = False #True -> Turns off all gravity with the exception of the sun.
 
 
-runtime = 100.0 #how long to run the simulation for, in seconds
+runtime = 50.0 #how long to run the simulation for, in seconds
 samp = 0.05 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment

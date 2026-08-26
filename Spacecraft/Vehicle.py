@@ -15,6 +15,7 @@ class Vehicle:
         # External force/torque module
         self.contact_force = extForceTorque.ExtForceTorque()
         self.contact_force.ModelTag = "TerrainContactForce"
+        self.lander.addDynamicEffector(self.contact_force)
 
 
 
@@ -40,8 +41,13 @@ class Vehicle:
 
         self.SM.add_altimeter(self.SM.altimeter,self.lander.scStateOutMsg)
 
-        # Connect MuJoCo collision force to Basilisk
-        self.contact_force.cmdForceBodyInMsg.subscribeTo(self.SM.altimeter.forceOutMsg)
+        # Connect MuJoCo contact loads to Basilisk.
+        self.contact_force.cmdForceInertialInMsg.subscribeTo(
+            self.SM.altimeter.forceOutMsg
+        )
+        self.contact_force.cmdTorqueInMsg.subscribeTo(
+            self.SM.altimeter.torqueOutMsg
+        )
 
 
         self.SM.register_to_task(self.sim, "record")  # Register task to the simulation environment
