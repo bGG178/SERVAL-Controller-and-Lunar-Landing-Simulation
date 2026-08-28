@@ -171,7 +171,7 @@ def get_xml(LF):
                 <mesh name="lunarTerrain"
                       file="SouthPole.obj"
                       scale="{_xml_vec(TERRAIN_SCALE)}"
-                      maxhullvert="1000"/>
+                      maxhullvert="1000000"/>
             </asset>
 
             <option gravity="0 0 -9.81"/>
@@ -187,7 +187,7 @@ def get_xml(LF):
                       euler="{_xml_vec(TERRAIN_ROTATION_MUJOCO)}"
                       contype="1"
                       conaffinity="1"
-                      margin="0.25"/>
+                      margin="0.0"/>
 
                 <body name="spacecraft">
 
@@ -198,7 +198,7 @@ def get_xml(LF):
                           size="0.5 0.5 0.2"
                           contype="1"
                           conaffinity="1"
-                          margin="0.25"/>
+                          margin="0.0"/>
 
                     <site name="laser_altimeter"
                           pos="0 0 -0.2"

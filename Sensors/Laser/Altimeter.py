@@ -54,9 +54,55 @@ class LaserAltimeter(sysModel.SysModel):
         self.contact_tangential_damping = 0.0
         self.contact_friction_coefficient = 0.8
         self.max_contact_force = 5.0e5
-        self.use_radial_contact_normal = True
-        self.apply_contact_torque = False
-        self.max_contact_torque = 2.0e3
+        self.use_radial_contact_normal = False
+        self.apply_contact_torque = True
+        self.max_contact_torque = 0.5e3
+
+        # ==============================================================
+        # CONTACT DEBUGGING
+        # ==============================================================
+
+        self.debug_contacts = True
+        self.debug_contact_every_n_steps = 20
+        self._debug_step_counter = 0
+
+        self.terrain_geom_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_GEOM,
+            "lunarTerrain"
+        )
+
+        print("\n========== MUJOCO TERRAIN DEBUG ==========")
+        print("Terrain geom ID:", self.terrain_geom_id)
+
+        if self.terrain_geom_id >= 0:
+
+            terrain_mesh_id = model.geom_dataid[self.terrain_geom_id]
+
+            print("Terrain geom type:", model.geom_type[self.terrain_geom_id])
+            print("Terrain mesh ID:", terrain_mesh_id)
+
+            if terrain_mesh_id >= 0:
+                print(
+                    "Terrain mesh name:",
+                    mujoco.mj_id2name(
+                        model,
+                        mujoco.mjtObj.mjOBJ_MESH,
+                        terrain_mesh_id
+                    )
+                )
+
+                print(
+                    "Terrain mesh vertices:",
+                    model.mesh_vertnum[terrain_mesh_id]
+                )
+
+                print(
+                    "Terrain mesh faces:",
+                    model.mesh_facenum[terrain_mesh_id]
+                )
+
+        print("==========================================\n")
 
         self.spacecraft_body_id = mujoco.mj_name2id(
             model,
@@ -294,6 +340,8 @@ class LaserAltimeter(sysModel.SysModel):
         self.contact_normal_mjc[:] = 0.0
         self.penetration = 0.0
 
+        self._debug_step_counter += 1
+
         for i in range(self.data.ncon):
 
             contact = self.data.contact[i]
@@ -313,10 +361,14 @@ class LaserAltimeter(sysModel.SysModel):
                 geom2
             )
 
-            # We only care about spacecraft ↔ terrain
+            # ----------------------------------------------------------
+            # Only spacecraft <-> terrain
+            # ----------------------------------------------------------
+
             spacecraft_contact = (
-                    name1 == "spacecraft_body"
-                    or name2 == "spacecraft_body"
+                    geom1 == self.spacecraft_geom_id
+                    or
+                    geom2 == self.spacecraft_geom_id
             )
 
             if not spacecraft_contact:
@@ -324,15 +376,134 @@ class LaserAltimeter(sysModel.SysModel):
 
             self.collision = True
 
+            normal = contact.frame[:3].copy()
+            normal /= max(np.linalg.norm(normal), 1e-12)
+
+            penetration = max(0.0, -contact.dist)
+
             self.contact_point_mjc = contact.pos.copy()
+            self.contact_normal_mjc = normal
+            self.penetration = penetration
 
-            # Contact frame's first axis is the contact normal
-            self.contact_normal_mjc = contact.frame[:3].copy()
+            # ----------------------------------------------------------
+            # DIAGNOSTICS
+            # ----------------------------------------------------------
 
-            # Negative distance means penetration
-            self.penetration = max(0.0, -contact.dist)
+            if (
+                    self.debug_contacts
+                    and (
+                    self.debug_contact_every_n_steps
+                    or self._debug_step_counter % self.debug_contact_every_n_steps == 0
+            )
+            ):
 
-            break
+                print("\n" + "=" * 70)
+                print("MUJOCO CONTACT")
+                print("=" * 70)
+
+                print("Contact index:", i)
+
+                print(
+                    "Geom 1:",
+                    geom1,
+                    name1
+                )
+
+                print(
+                    "Geom 2:",
+                    geom2,
+                    name2
+                )
+
+                print("Contact distance:", contact.dist)
+                print("Penetration:", penetration)
+
+                print("\nContact position [MuJoCo]:")
+                print(contact.pos)
+
+                print("\nContact normal [MuJoCo]:")
+                print(normal)
+
+                print("\nFull contact frame:")
+                print(contact.frame.reshape(3, 3))
+
+                # ------------------------------------------------------
+                # Spacecraft COM
+                # ------------------------------------------------------
+
+                qpos_adr = self.spacecraft_qpos_adr
+
+                spacecraft_pos = self.data.qpos[
+                    qpos_adr:qpos_adr + 3
+                ]
+
+                print("\nSpacecraft COM:")
+                print(spacecraft_pos)
+
+                # ------------------------------------------------------
+                # Vector COM -> contact
+                # ------------------------------------------------------
+
+                r_contact = contact.pos - spacecraft_pos
+
+                print("\nCOM -> contact:")
+                print(r_contact)
+
+                print(
+                    "COM -> contact distance:",
+                    np.linalg.norm(r_contact)
+                )
+
+                # ------------------------------------------------------
+                # RADIAL NORMAL
+                # ------------------------------------------------------
+
+                radial = spacecraft_pos.copy()
+                radial_norm = np.linalg.norm(radial)
+
+                if radial_norm > 0.0:
+                    radial /= radial_norm
+
+                    print("\nRadial normal:")
+                    print(radial)
+
+                    print(
+                        "Angle between radial and MuJoCo normal [deg]:",
+                        np.degrees(
+                            np.arccos(
+                                np.clip(
+                                    np.dot(radial, normal),
+                                    -1.0,
+                                    1.0
+                                )
+                            )
+                        )
+                    )
+
+                # ------------------------------------------------------
+                # Contact force BEFORE any radial-normal override
+                # ------------------------------------------------------
+
+                contact_force = np.zeros(6)
+
+                mujoco.mj_contactForce(
+                    self.model,
+                    self.data,
+                    i,
+                    contact_force
+                )
+
+                print("\nMuJoCo contact force:")
+                print(contact_force)
+
+                print("\n" + "=" * 70)
+
+        # --------------------------------------------------------------
+        # IMPORTANT:
+        #
+        # DO NOT modify the MuJoCo contact normal here.
+        # get_contact_loads() will use contact.frame[:3].
+        # --------------------------------------------------------------
 
     def get_contact_loads(self, r_spacecraft_mjc, v_spacecraft_mjc,
                           omega_spacecraft_mjc,
@@ -355,6 +526,14 @@ class LaserAltimeter(sysModel.SysModel):
                 continue
 
             normal_mjc = contact.frame[:3].copy()
+            print(
+                "RAW CONTACT NORMAL:",
+                normal_mjc,
+                " CONTACT POS:",
+                contact.pos,
+                " DIST:",
+                contact.dist
+            )
             normal_norm = np.linalg.norm(normal_mjc)
             if normal_norm <= 0.0:
                 continue
@@ -376,6 +555,10 @@ class LaserAltimeter(sysModel.SysModel):
             )
             normal_velocity = np.dot(contact_velocity_mjc, normal_mjc)
             penetration = max(0.0, -contact.dist)
+
+            if penetration <= 0.0:
+                continue
+
             force_magnitude = max(
                 0.0,
                 self.contact_stiffness * penetration
