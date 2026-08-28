@@ -1,4 +1,3 @@
-import Basilisk
 import mujoco
 import numpy as np
 from Basilisk.architecture import messaging, sysModel, bskLogging
@@ -50,12 +49,12 @@ class LaserAltimeter(sysModel.SysModel):
         self.penetration = 0.0
         self.contact_margin = 0.25
         self.contact_stiffness = 5.0e5
-        self.contact_damping = 8.0e4
+        self.contact_damping = 8.0e5
         self.contact_tangential_damping = 0.0
         self.contact_friction_coefficient = 0.8
         self.max_contact_force = 5.0e5
         self.use_radial_contact_normal = False
-        self.apply_contact_torque = True
+        self.apply_contact_torque = False
         self.max_contact_torque = 0.5e3
 
         # ==============================================================
@@ -257,8 +256,6 @@ class LaserAltimeter(sysModel.SysModel):
         # ==============================================================
         # 9. MUJOCO → BASILISK
         # ==============================================================
-
-        print("Contact force: ", F_N, "Torque: ", torque_B)
 
         self.publish_contact_loads(
             F_N,
@@ -518,84 +515,175 @@ class LaserAltimeter(sysModel.SysModel):
             geom1 = contact.geom1
             geom2 = contact.geom2
 
-            if (
-                    geom1 != self.spacecraft_geom_id
-                    and
-                    geom2 != self.spacecraft_geom_id
-            ):
-                continue
+            # ----------------------------------------------------------
+            # Only spacecraft <-> terrain contacts
+            # ----------------------------------------------------------
+
+            # ----------------------------------------------------------
+            # Contact point velocity
+            # ----------------------------------------------------------
+
+            r_contact_from_com_mjc = (
+                    contact.pos - r_spacecraft_mjc
+            )
+
+            contact_velocity_mjc = (
+                    v_spacecraft_mjc
+                    + np.cross(
+                omega_spacecraft_mjc,
+                r_contact_from_com_mjc
+            )
+            )
+
+            # ----------------------------------------------------------
+            # Contact normal
+            # ----------------------------------------------------------
 
             normal_mjc = contact.frame[:3].copy()
-            print(
-                "RAW CONTACT NORMAL:",
-                normal_mjc,
-                " CONTACT POS:",
-                contact.pos,
-                " DIST:",
-                contact.dist
-            )
+
             normal_norm = np.linalg.norm(normal_mjc)
-            if normal_norm <= 0.0:
+
+            if normal_norm <= 1e-12:
                 continue
 
             normal_mjc /= normal_norm
-            if self.use_radial_contact_normal:
-                radial_norm = np.linalg.norm(r_spacecraft_mjc)
-                if radial_norm > 0.0:
-                    normal_mjc = r_spacecraft_mjc / radial_norm
 
-            contact_to_spacecraft = r_spacecraft_mjc - contact.pos
-            if np.dot(normal_mjc, contact_to_spacecraft) < 0.0:
+            # MuJoCo gives the normal according to geom ordering.
+            # With spacecraft as geom1 and terrain as geom2,
+            # reverse it so it points from terrain INTO spacecraft.
+            if geom1 == self.spacecraft_geom_id:
                 normal_mjc *= -1.0
 
-            r_contact_from_com_mjc = contact.pos - r_spacecraft_mjc
-            contact_velocity_mjc = (
-                    v_spacecraft_mjc
-                    + np.cross(omega_spacecraft_mjc, r_contact_from_com_mjc)
-            )
-            normal_velocity = np.dot(contact_velocity_mjc, normal_mjc)
+            # ----------------------------------------------------------
+            # Penetration
+            # ----------------------------------------------------------
+
             penetration = max(0.0, -contact.dist)
 
             if penetration <= 0.0:
                 continue
 
-            force_magnitude = max(
-                0.0,
-                self.contact_stiffness * penetration
-                - self.contact_damping * normal_velocity
-            )
-            force_magnitude = min(force_magnitude, self.max_contact_force)
+            # ----------------------------------------------------------
+            # Normal velocity
+            # ----------------------------------------------------------
 
-            force_mjc = force_magnitude * normal_mjc
+            normal_velocity = np.dot(
+                contact_velocity_mjc,
+                normal_mjc
+            )
+
+            # ----------------------------------------------------------
+            # Spring-damper contact
+            # ----------------------------------------------------------
+
+            spring_force = (
+                    self.contact_stiffness * penetration
+            )
+
+            # Damping only resists motion INTO the terrain.
+            if normal_velocity < 0.0:
+                damping_force = (
+                        -self.contact_damping * normal_velocity
+                )
+            else:
+                damping_force = 0.0
+
+            force_magnitude = (
+                    spring_force + damping_force
+            )
+
+            # Safety limit
+            force_magnitude = min(
+                force_magnitude,
+                self.max_contact_force
+            )
+
+            force_mjc = (
+                    force_magnitude * normal_mjc
+            )
+
+            print(
+                "CUSTOM CONTACT:",
+                "penetration =", penetration,
+                "normal_velocity =", normal_velocity,
+                "spring_force =", spring_force,
+                "damping_force =", damping_force,
+                "force =", force_mjc
+            )
+
+
+
+            # ----------------------------------------------------------
+            # Tangential damping / friction
+            # ----------------------------------------------------------
 
             tangential_velocity_mjc = (
                     contact_velocity_mjc
                     - normal_velocity * normal_mjc
             )
-            tangential_speed = np.linalg.norm(tangential_velocity_mjc)
-            if tangential_speed > 0.0 and force_magnitude > 0.0:
+
+            tangential_speed = np.linalg.norm(
+                tangential_velocity_mjc
+            )
+
+            if (
+                    tangential_speed > 0.0
+                    and
+                    force_magnitude > 0.0
+            ):
+
                 tangential_force_mjc = (
                         -self.contact_tangential_damping
                         * tangential_velocity_mjc
                 )
+
                 tangential_force_limit = (
                         self.contact_friction_coefficient
                         * force_magnitude
                 )
-                tangential_force_norm = np.linalg.norm(tangential_force_mjc)
+
+                tangential_force_norm = np.linalg.norm(
+                    tangential_force_mjc
+                )
+
                 if tangential_force_norm > tangential_force_limit:
                     tangential_force_mjc *= (
                             tangential_force_limit
                             / tangential_force_norm
                     )
+
                 force_mjc += tangential_force_mjc
+
+            # ----------------------------------------------------------
+            # Accumulate total force
+            # ----------------------------------------------------------
 
             F_mjc += force_mjc
 
+            # ----------------------------------------------------------
+            # Contact torque
+            # ----------------------------------------------------------
+
             if self.apply_contact_torque:
-                r_contact_from_com_N = R_mjc_to_bsk @ r_contact_from_com_mjc
-                force_N = R_mjc_to_bsk @ force_mjc
-                torque_B += C_BN @ np.cross(r_contact_from_com_N, force_N)
+                r_contact_from_com_N = (
+                        R_mjc_to_bsk @ r_contact_from_com_mjc
+                )
+
+                force_N = (
+                        R_mjc_to_bsk @ force_mjc
+                )
+
+                torque_B += (
+                        C_BN
+                        @ np.cross(
+                    r_contact_from_com_N,
+                    force_N
+                )
+                )
+
+            # ----------------------------------------------------------
+            # Save latest contact
+            # ----------------------------------------------------------
 
             self.collision = True
             self.contact_force_mjc = force_mjc
@@ -603,9 +691,20 @@ class LaserAltimeter(sysModel.SysModel):
             self.contact_normal_mjc = normal_mjc
             self.penetration = penetration
 
+        # --------------------------------------------------------------
+        # Limit total contact torque
+        # --------------------------------------------------------------
+
         torque_norm = np.linalg.norm(torque_B)
+
         if torque_norm > self.max_contact_torque:
-            torque_B *= self.max_contact_torque / torque_norm
+            torque_B *= (
+                    self.max_contact_torque / torque_norm
+            )
+
+        # --------------------------------------------------------------
+        # MuJoCo -> Basilisk force conversion
+        # --------------------------------------------------------------
 
         return R_mjc_to_bsk @ F_mjc, torque_B
 
@@ -635,53 +734,4 @@ class LaserAltimeter(sysModel.SysModel):
             self.moduleID
         )
 
-    def get_mujoco_contact_force(self):
 
-        F_mjc = np.zeros(3)
-
-        # No contacts
-        if self.data.ncon == 0:
-            return F_mjc
-
-        for i in range(self.data.ncon):
-
-            contact = self.data.contact[i]
-
-            # Get the two geoms involved
-            geom1 = contact.geom1
-            geom2 = contact.geom2
-
-            # Only consider contacts involving the spacecraft
-            if (
-                    geom1 != self.spacecraft_geom_id
-                    and
-                    geom2 != self.spacecraft_geom_id
-            ):
-                continue
-
-            # MuJoCo contact force
-            contact_force = np.zeros(6)
-
-            mujoco.mj_contactForce(
-                self.model,
-                self.data,
-                i,
-                contact_force
-            )
-
-            # First 3 values are force in the contact frame
-            force_contact = contact_force[:3]
-
-            # contact.frame is a 3x3 rotation matrix stored flat
-            frame = contact.frame.reshape(3, 3)
-
-            # Convert contact-frame force → MuJoCo world frame
-            force_world = frame.T @ force_contact
-
-            # Make sure the force points ON the spacecraft
-            if geom2 == self.spacecraft_geom_id:
-                force_world *= -1.0
-
-            F_mjc += force_world
-
-        return F_mjc

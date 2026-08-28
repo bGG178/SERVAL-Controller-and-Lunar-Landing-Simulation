@@ -27,7 +27,7 @@ DISABLE_GRAVITY = False #True -> Turns off all gravity with the exception of the
 
 
 runtime = 50.0 #how long to run the simulation for, in seconds
-samp = 0.05 #sampling rate, ie how often to take measurements, in seconds
+samp = 0.01 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment
 
@@ -44,13 +44,11 @@ orbital_parameters = {
 spacecraft_velocity_override = [0, 0, 0] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
 spacecraft_position_override = [0,-1737500.0,0] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
 
-
 mrp1, mrp2, mrp3 = RigidBodyKinematics.euler3212MRP(np.deg2rad([0.0, 0.0, 90.0])) #input as degrees here for spacecraft rotation!
 
 spacecraft_attitude_MRP = [[mrp1], [mrp2], [mrp3]] #Starting attitude of spacecraft with respect to the body and inertial frame as a modified rodrigues parameter  (N->P)
 spacecraft_attitude_rate = [[0.0], [0.0], [0.0]]  # Current angular velocity with body frame relative to inertial frame (rad/s)
 spacecraft_mass = 2120.0                    #kg, not sure yet how to deal with CoM or where that is defined
-
 
 
 SPACECRAFT_BODY_NAME = "IMX"
@@ -91,14 +89,11 @@ sim.ExecuteSimulation()
 
 out = sc.output()
 
-
 #vvvvvv everything else is just diagnostics and plotting below vvvvvv
 ##region plotting
 for line in out:
     print(line)
     print()
-
-
 
 true = out["true_data"]
 
