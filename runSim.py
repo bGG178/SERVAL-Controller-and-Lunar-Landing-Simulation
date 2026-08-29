@@ -27,7 +27,7 @@ DISABLE_GRAVITY = False #True -> Turns off all gravity with the exception of the
 
 
 runtime = 50.0 #how long to run the simulation for, in seconds
-samp = 0.05 #sampling rate, ie how often to take measurements, in seconds
+samp = 0.01 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment
 
@@ -41,7 +41,7 @@ orbital_parameters = {
         }
 
 
-spacecraft_velocity_override = [0, 0, 0] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
+spacecraft_velocity_override = [0, 0, -10] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
 spacecraft_position_override = [0,-1737500.0,0] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
 
 
