@@ -51,12 +51,15 @@ class LaserAltimeter(sysModel.SysModel):
         self.contact_margin = 0.25
         self.contact_stiffness = 1.0e5
         self.contact_damping = 2.0e4
-        self.contact_tangential_damping = 0.0
+        self.contact_tangential_damping = 5000.0
         self.contact_friction_coefficient = 0.8
         self.max_contact_force = 2.0e5
         self.use_radial_contact_normal = False
         self.apply_contact_torque = True
         self.max_contact_torque = 0.5e3
+        self.settle_velocity_threshold = 0.02  # m/s
+        self.settle_damping = 50000.0  # N/(m/s)  Damping used to remove small residual tangential motion.
+        self.max_settle_force = 2.0e4  # Maximum force available to kill residual motion.
 
         # ==============================================================
         # CONTACT DEBUGGING
@@ -643,7 +646,7 @@ class LaserAltimeter(sysModel.SysModel):
             print("force MJC:", force_mjc)
 
             # ==============================================================
-            # TANGENTIAL FRICTION / DAMPING
+            # TANGENTIAL FRICTION
             # ==============================================================
 
             tangential_velocity_mjc = (
@@ -652,9 +655,36 @@ class LaserAltimeter(sysModel.SysModel):
                     normal_velocity * normal_mjc
             )
 
+            tangential_speed = np.linalg.norm(
+                tangential_velocity_mjc
+            )
+
             tangential_force_mjc = np.zeros(3)
 
-            if self.contact_tangential_damping > 0.0:
+            if tangential_speed > 1e-12:
+
+                # ----------------------------------------------------------
+                # Maximum available Coulomb friction
+                # ----------------------------------------------------------
+
+                friction_limit = (
+                        self.contact_friction_coefficient
+                        *
+                        force_magnitude
+                )
+
+                # ----------------------------------------------------------
+                # Viscous friction / damping
+                #
+                # This is what actually produces a friction force.
+                # It opposes BOTH:
+                #
+                #   translational sliding
+                #
+                #   rotational motion at the contact point
+                #
+                # because tangential_velocity includes omega x r.
+                # ----------------------------------------------------------
 
                 tangential_force_mjc = (
                         -self.contact_tangential_damping
@@ -662,22 +692,48 @@ class LaserAltimeter(sysModel.SysModel):
                         tangential_velocity_mjc
                 )
 
+                # ----------------------------------------------------------
+                # Coulomb friction limit
+                # ----------------------------------------------------------
+
                 tangential_force_norm = np.linalg.norm(
                     tangential_force_mjc
                 )
 
-                tangential_force_limit = (
-                        self.contact_friction_coefficient
-                        *
-                        force_magnitude
-                )
-
-                if tangential_force_norm > tangential_force_limit:
+                if tangential_force_norm > friction_limit:
                     tangential_force_mjc *= (
-                            tangential_force_limit
+                            friction_limit
                             /
                             tangential_force_norm
                     )
+
+                # ----------------------------------------------------------
+                # SETTLING
+                #
+                # Once the contact point is moving very slowly, use a
+                # stronger damping force to eliminate residual creeping.
+                # ----------------------------------------------------------
+
+                if tangential_speed < self.settle_velocity_threshold:
+
+                    settle_force = (
+                            -self.settle_damping
+                            *
+                            tangential_velocity_mjc
+                    )
+
+                    settle_force_norm = np.linalg.norm(
+                        settle_force
+                    )
+
+                    if settle_force_norm > friction_limit:
+                        settle_force *= (
+                                friction_limit
+                                /
+                                max(settle_force_norm, 1e-12)
+                        )
+
+                    tangential_force_mjc = settle_force
 
             force_mjc += tangential_force_mjc
 
@@ -729,10 +785,10 @@ class LaserAltimeter(sysModel.SysModel):
         # TORQUE LIMIT
         # ==============================================================
 
-        print("\nTOTAL CONTACT FORCE")
-        print("F_mjc:", F_mjc)
-        print("F_N:", R_mjc_to_bsk @ F_mjc)
-        print("magnitude:", np.linalg.norm(F_mjc))
+        #print("\nTOTAL CONTACT FORCE")
+        #print("F_mjc:", F_mjc)
+        #print("F_N:", R_mjc_to_bsk @ F_mjc)
+        #print("magnitude:", np.linalg.norm(F_mjc))
 
         torque_norm = np.linalg.norm(torque_B)
 
@@ -741,6 +797,25 @@ class LaserAltimeter(sysModel.SysModel):
                     self.max_contact_torque
                     /
                     torque_norm
+            )
+
+        print("\nTORQUE DEBUG")
+
+        print("torque before clamp:")
+        print(torque_B)
+
+        print("torque magnitude:")
+        print(np.linalg.norm(torque_B))
+
+        omega_B = C_BN @ omega_spacecraft_mjc
+
+        print("omega_B:")
+        print(omega_B)
+
+        if np.linalg.norm(omega_B) > 1e-12:
+            print(
+                "torque · omega:",
+                np.dot(torque_B, omega_B)
             )
 
         # ==============================================================

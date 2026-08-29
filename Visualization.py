@@ -15,7 +15,7 @@ def initialize_vizard(sim, sc):
 
         viz.settings.showSpacecraftLabels = 1
         viz.settings.showSpacecraftAsSprites = -1
-        viz.settings.ambient = 0.5
+        viz.settings.ambient = 0.9
         viz.settings.spacecraftShadowBrightness = 0.07
 
         vizSupport.setActuatorGuiSetting(viz)
