@@ -21,10 +21,35 @@ class LaserAltimeter(sysModel.SysModel):
         self.model = model
         self.data = data
         self.laser_id = laser_id
-        self.spacecraft_geom_id = mujoco.mj_name2id(
-            model,
-            mujoco.mjtObj.mjOBJ_GEOM,
-            "spacecraft_body"
+        self.spacecraft_collision_geom_names = (
+            "spacecraft_core",
+            "spacecraft_leg_1",
+            "spacecraft_leg_2",
+            "spacecraft_leg_3",
+            "spacecraft_leg_4",
+            "spacecraft_foot_1",
+            "spacecraft_foot_2",
+            "spacecraft_foot_3",
+            "spacecraft_foot_4",
+            "spacecraft_body",
+        )
+        self.spacecraft_geom_ids = [
+            geom_id
+            for geom_id in (
+                mujoco.mj_name2id(
+                    model,
+                    mujoco.mjtObj.mjOBJ_GEOM,
+                    geom_name
+                )
+                for geom_name in self.spacecraft_collision_geom_names
+            )
+            if geom_id >= 0
+        ]
+        self.spacecraft_geom_id_set = set(self.spacecraft_geom_ids)
+        self.spacecraft_geom_id = (
+            self.spacecraft_geom_ids[0]
+            if self.spacecraft_geom_ids
+            else -1
         )
 
         # Basilisk input: spacecraft state
@@ -52,14 +77,33 @@ class LaserAltimeter(sysModel.SysModel):
         self.contact_stiffness = 1.0e5
         self.contact_damping = 2.0e4
         self.contact_tangential_damping = 5000.0
-        self.contact_friction_coefficient = 0.8
+        self.resting_tangential_damping = 50000.0
+        self.contact_friction_coefficient = 2.0
         self.max_contact_force = 2.0e5
+        self.surface_probe_distance = 2.0
+        self.surface_contact_margin = self.contact_margin
+        self.surface_normal_sample_offset = 0.5
         self.use_radial_contact_normal = False
         self.apply_contact_torque = True
         self.max_contact_torque = 0.5e3
-        self.settle_velocity_threshold = 0.02  # m/s
+        self.max_impact_contact_torque = 2.0e4
+        self.settle_velocity_threshold = 0.05  # m/s
         self.settle_damping = 50000.0  # N/(m/s)  Damping used to remove small residual tangential motion.
         self.max_settle_force = 2.0e4  # Maximum force available to kill residual motion.
+        self.max_contact_penetration = 0.02  # 2 cm
+        self.max_impact_contact_penetration = 0.15  # 15 cm
+        self.resting_velocity_threshold = 0.5
+        self.resting_penetration_threshold = self.max_contact_penetration
+        self.mu_moon = 4.9048695e12
+        self.spacecraft_mass = 2120.0
+        self.resting_angular_damping = 500.0
+        self.resting_angular_settle_damping = 5000.0
+        self.resting_angular_settle_threshold = 0.05
+        self.resting_angular_velocity_threshold = 1.0e-6
+        self.max_resting_damping_torque = 1000.0
+        self.spacecraft_inertia_B = np.diag([204.93, 204.93, 353.33])
+        self._previous_update_time_s = None
+        self._time_step_s = 0.01
 
         # ==============================================================
         # CONTACT DEBUGGING
@@ -68,12 +112,14 @@ class LaserAltimeter(sysModel.SysModel):
         self.debug_contacts = True
         self.debug_contact_every_n_steps = 20
         self._debug_step_counter = 0
+        self.surface_contacts = []
 
         self.terrain_geom_id = mujoco.mj_name2id(
             model,
             mujoco.mjtObj.mjOBJ_GEOM,
-            "lunarTerrain"
+            "lunarTerrain_geom"
         )
+        self.use_mesh_surface_contacts = self.terrain_geom_id >= 0
 
         print("\n========== MUJOCO TERRAIN DEBUG ==========")
         print("Terrain geom ID:", self.terrain_geom_id)
@@ -113,10 +159,25 @@ class LaserAltimeter(sysModel.SysModel):
             "spacecraft"
         )
 
-        if self.spacecraft_geom_id < 0:
-            raise RuntimeError("MuJoCo model is missing geom 'spacecraft_body'.")
+        if not self.spacecraft_geom_ids:
+            raise RuntimeError(
+                "MuJoCo model is missing spacecraft collision geoms."
+            )
         if self.spacecraft_body_id < 0:
             raise RuntimeError("MuJoCo model is missing body 'spacecraft'.")
+
+        self.surface_contact_geom_ids = [
+            geom_id
+            for geom_id in self.spacecraft_geom_ids
+            if (
+                mujoco.mj_id2name(
+                    model,
+                    mujoco.mjtObj.mjOBJ_GEOM,
+                    geom_id
+                )
+                or ""
+            ).startswith("spacecraft_foot_")
+        ]
 
         self.spacecraft_joint_id = mujoco.mj_name2id(
             model,
@@ -134,6 +195,16 @@ class LaserAltimeter(sysModel.SysModel):
         self.spacecraft_qvel_adr = model.jnt_dofadr[
             self.spacecraft_joint_id
         ]
+
+    def is_spacecraft_geom(self, geom_id):
+        return geom_id in self.spacecraft_geom_id_set
+
+    def is_spacecraft_contact(self, geom1, geom2):
+        return (
+                self.is_spacecraft_geom(geom1)
+                or
+                self.is_spacecraft_geom(geom2)
+        )
 
 
     # ======================================================================
@@ -176,6 +247,15 @@ class LaserAltimeter(sysModel.SysModel):
 
         R_bsk_to_mjc = R_BSK_TO_MUJOCO
         R_mjc_to_bsk = R_MUJOCO_TO_BSK
+        current_time_s = CurrentSimNanos * 1.0e-9
+
+        if self._previous_update_time_s is not None:
+            dt = current_time_s - self._previous_update_time_s
+
+            if dt > 0.0:
+                self._time_step_s = dt
+
+        self._previous_update_time_s = current_time_s
 
         # ==============================================================
         # 2. READ BASILISK STATE
@@ -200,7 +280,7 @@ class LaserAltimeter(sysModel.SysModel):
 
         C_BN = RigidBodyKinematics.MRP2C(sigma_BN)
         C_NB = C_BN.T
-        omega_BN_N = C_BN @ omega_BN_B
+        omega_BN_N = C_NB @ omega_BN_B
 
         C_mjc = (
                 R_bsk_to_mjc
@@ -243,7 +323,11 @@ class LaserAltimeter(sysModel.SysModel):
         # 7. CHECK CONTACT
         # ==============================================================
 
-        self.check_collision()
+        if self.use_mesh_surface_contacts:
+            self.surface_contacts = self.find_mesh_surface_contacts()
+            self.check_surface_collision()
+        else:
+            self.check_collision()
 
         # ==============================================================
         # 8. COMPUTE CONTACT LOADS
@@ -335,6 +419,191 @@ class LaserAltimeter(sysModel.SysModel):
 
         return distance, geom_id[0]
 
+    def raycast_terrain(self, origin, direction):
+
+        geomgroup = np.ones(6, dtype=np.uint8)
+        geom_id = np.array([-1], dtype=np.int32)
+
+        distance = mujoco.mj_ray(
+            self.model,
+            self.data,
+            origin,
+            direction,
+            geomgroup,
+            1,
+            self.spacecraft_body_id,
+            geom_id
+        )
+
+        if distance < 0.0 or geom_id[0] != self.terrain_geom_id:
+            return None
+
+        return distance, origin + distance * direction
+
+    def terrain_normal_at(self, surface_point, down_direction):
+
+        up_direction = -down_direction
+        reference = np.array([1.0, 0.0, 0.0])
+
+        if abs(np.dot(reference, down_direction)) > 0.9:
+            reference = np.array([0.0, 1.0, 0.0])
+
+        tangent_1 = np.cross(down_direction, reference)
+        tangent_1 /= max(np.linalg.norm(tangent_1), 1e-12)
+
+        tangent_2 = np.cross(down_direction, tangent_1)
+        tangent_2 /= max(np.linalg.norm(tangent_2), 1e-12)
+
+        sample_offset = self.surface_normal_sample_offset
+        ray_start_offset = self.surface_probe_distance
+
+        sample_points = []
+
+        for tangent in (tangent_1, tangent_2):
+            ray_origin = (
+                surface_point
+                +
+                sample_offset * tangent
+                -
+                ray_start_offset * down_direction
+            )
+            hit = self.raycast_terrain(ray_origin, down_direction)
+
+            if hit is None:
+                return up_direction
+
+            sample_points.append(hit[1])
+
+        normal = np.cross(
+            sample_points[0] - surface_point,
+            sample_points[1] - surface_point
+        )
+        normal_norm = np.linalg.norm(normal)
+
+        if normal_norm < 1e-12:
+            return up_direction
+
+        normal /= normal_norm
+
+        if np.dot(normal, up_direction) < 0.0:
+            normal *= -1.0
+
+        return normal
+
+    def spacecraft_foot_sample_points(self, geom_id):
+
+        geom_type = self.model.geom_type[geom_id]
+
+        if geom_type != mujoco.mjtGeom.mjGEOM_BOX:
+            return []
+
+        center = self.data.geom_xpos[geom_id].copy()
+        rotation = self.data.geom_xmat[geom_id].reshape(3, 3)
+        half_size = self.model.geom_size[geom_id].copy()
+
+        sample_points = []
+
+        for sx in (-1.0, 1.0):
+            for sy in (-1.0, 1.0):
+                for sz in (-1.0, 1.0):
+                    local_corner = half_size * np.array([sx, sy, sz])
+                    sample_points.append(center + rotation @ local_corner)
+
+        return sample_points
+
+    def find_mesh_surface_contacts(self):
+
+        contacts = []
+
+        for geom_id in self.surface_contact_geom_ids:
+            geom_name = mujoco.mj_id2name(
+                self.model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                geom_id
+            )
+
+            for sample_point in self.spacecraft_foot_sample_points(geom_id):
+                radial_norm = np.linalg.norm(sample_point)
+
+                if radial_norm < 1e-12:
+                    continue
+
+                down_direction = -sample_point / radial_norm
+                ray_origin = (
+                    sample_point
+                    -
+                    self.surface_probe_distance * down_direction
+                )
+                hit = self.raycast_terrain(ray_origin, down_direction)
+
+                if hit is None:
+                    continue
+
+                distance, surface_point = hit
+                clearance = distance - self.surface_probe_distance
+
+                if clearance > self.surface_contact_margin:
+                    continue
+
+                normal = self.terrain_normal_at(
+                    surface_point,
+                    down_direction
+                )
+
+                contacts.append({
+                    "geom_id": geom_id,
+                    "geom_name": geom_name,
+                    "pos": surface_point,
+                    "normal": normal,
+                    "clearance": clearance,
+                    "penetration": max(
+                        0.0,
+                        self.surface_contact_margin - clearance
+                    )
+                })
+
+        return contacts
+
+    def check_surface_collision(self):
+
+        self.collision = False
+        self.contact_force_mjc[:] = 0.0
+        self.contact_point_mjc[:] = 0.0
+        self.contact_normal_mjc[:] = 0.0
+        self.penetration = 0.0
+
+        self._debug_step_counter += 1
+
+        if not self.surface_contacts:
+            return
+
+        deepest_contact = max(
+            self.surface_contacts,
+            key=lambda contact: contact["penetration"]
+        )
+
+        self.collision = True
+        self.contact_point_mjc = deepest_contact["pos"].copy()
+        self.contact_normal_mjc = deepest_contact["normal"].copy()
+        self.penetration = deepest_contact["penetration"]
+
+        if (
+                self.debug_contacts
+                and self._debug_step_counter % self.debug_contact_every_n_steps == 0
+        ):
+            print("\n" + "=" * 70)
+            print("RAYCAST MESH CONTACT")
+            print("=" * 70)
+            print("Contact samples:", len(self.surface_contacts))
+            print("Geom:", deepest_contact["geom_name"])
+            print("Clearance:", deepest_contact["clearance"])
+            print("Penetration:", deepest_contact["penetration"])
+            print("\nContact position [MuJoCo]:")
+            print(deepest_contact["pos"])
+            print("\nContact normal [MuJoCo]:")
+            print(deepest_contact["normal"])
+            print("\n" + "=" * 70)
+
     def check_collision(self):
 
         self.collision = False
@@ -368,11 +637,7 @@ class LaserAltimeter(sysModel.SysModel):
             # Only spacecraft <-> terrain
             # ----------------------------------------------------------
 
-            spacecraft_contact = (
-                    geom1 == self.spacecraft_geom_id
-                    or
-                    geom2 == self.spacecraft_geom_id
-            )
+            spacecraft_contact = self.is_spacecraft_contact(geom1, geom2)
 
             if not spacecraft_contact:
                 continue
@@ -505,7 +770,7 @@ class LaserAltimeter(sysModel.SysModel):
         # get_contact_loads() will use contact.frame[:3].
         # --------------------------------------------------------------
 
-    def get_contact_loads(
+    def get_mesh_surface_contact_loads(
             self,
             r_spacecraft_mjc,
             v_spacecraft_mjc,
@@ -515,6 +780,372 @@ class LaserAltimeter(sysModel.SysModel):
 
         F_mjc = np.zeros(3)
         torque_B = np.zeros(3)
+
+        if not self.surface_contacts:
+            return R_mjc_to_bsk @ F_mjc, torque_B
+
+        active_contact_count = len(self.surface_contacts)
+        omega_spacecraft_N = R_mjc_to_bsk @ omega_spacecraft_mjc
+        omega_spacecraft_B = C_BN @ omega_spacecraft_N
+        impact_contact_count = 0
+        resting_contact_count = 0
+
+        r_com_norm = np.linalg.norm(r_spacecraft_mjc)
+
+        if r_com_norm > 1e-12:
+            gravity_mjc = (
+                    -self.mu_moon
+                    *
+                    r_spacecraft_mjc
+                    /
+                    r_com_norm ** 3
+            )
+        else:
+            gravity_mjc = np.zeros(3)
+
+        for contact in self.surface_contacts:
+            normal_mjc = contact["normal"].copy()
+            normal_mjc /= max(np.linalg.norm(normal_mjc), 1e-12)
+            r_contact_from_com_mjc = contact["pos"] - r_spacecraft_mjc
+            contact_velocity_mjc = (
+                    v_spacecraft_mjc
+                    +
+                    np.cross(
+                        omega_spacecraft_mjc,
+                        r_contact_from_com_mjc
+                    )
+            )
+            normal_velocity = np.dot(contact_velocity_mjc, normal_mjc)
+            tangential_velocity_mjc = (
+                    contact_velocity_mjc
+                    -
+                    normal_velocity * normal_mjc
+            )
+            tangential_speed = np.linalg.norm(tangential_velocity_mjc)
+
+            if (
+                    contact["penetration"] <= self.resting_penetration_threshold
+                    and
+                    abs(normal_velocity) <= self.resting_velocity_threshold
+                    and
+                    tangential_speed <= self.resting_velocity_threshold
+            ):
+                resting_contact_count += 1
+
+        for contact in self.surface_contacts:
+            normal_mjc = contact["normal"].copy()
+            normal_mjc /= max(np.linalg.norm(normal_mjc), 1e-12)
+            penetration_raw = contact["penetration"]
+
+            if penetration_raw <= 0.0:
+                continue
+
+            penetration = min(
+                penetration_raw,
+                self.max_contact_penetration
+            )
+
+            r_contact_from_com_mjc = contact["pos"] - r_spacecraft_mjc
+            contact_velocity_mjc = (
+                    v_spacecraft_mjc
+                    +
+                    np.cross(
+                        omega_spacecraft_mjc,
+                        r_contact_from_com_mjc
+                    )
+            )
+            normal_velocity = np.dot(contact_velocity_mjc, normal_mjc)
+            tangential_velocity_mjc = (
+                    contact_velocity_mjc
+                    -
+                    normal_velocity * normal_mjc
+            )
+            tangential_speed = np.linalg.norm(tangential_velocity_mjc)
+
+            gravity_normal = np.dot(gravity_mjc, normal_mjc)
+            required_normal_force = max(
+                0.0,
+                -self.spacecraft_mass * gravity_normal
+            )
+
+            resting_contact = (
+                    penetration <= self.resting_penetration_threshold
+                    and
+                    abs(normal_velocity) <= self.resting_velocity_threshold
+                    and
+                    tangential_speed <= self.resting_velocity_threshold
+            )
+
+            if resting_contact:
+                force_magnitude = (
+                        required_normal_force
+                        -
+                        self.contact_damping * normal_velocity
+                )
+                force_magnitude = max(0.0, force_magnitude)
+                force_magnitude = min(
+                    force_magnitude,
+                    self.max_contact_force
+                )
+                force_magnitude /= max(resting_contact_count, 1)
+            else:
+                impact_contact_count += 1
+                impact_penetration = min(
+                    penetration_raw,
+                    self.max_impact_contact_penetration
+                )
+                force_magnitude = (
+                        self.contact_stiffness * impact_penetration
+                        -
+                        self.contact_damping * normal_velocity
+                )
+                force_magnitude = max(0.0, force_magnitude)
+                force_magnitude = min(
+                    force_magnitude,
+                    self.max_contact_force
+                )
+                force_magnitude /= max(active_contact_count, 1)
+
+            force_mjc = force_magnitude * normal_mjc
+            tangential_force_mjc = np.zeros(3)
+            friction_limit = (
+                    self.contact_friction_coefficient
+                    *
+                    force_magnitude
+            )
+
+            if tangential_speed > 1e-8 and friction_limit > 0.0:
+                tangential_direction = (
+                        tangential_velocity_mjc
+                        /
+                        tangential_speed
+                )
+                tangential_force_mjc = (
+                        -friction_limit
+                        *
+                        tangential_direction
+                )
+
+                if self.contact_tangential_damping > 0.0:
+                    tangential_force_mjc += (
+                            -self.contact_tangential_damping
+                            *
+                            tangential_velocity_mjc
+                    )
+
+                tangential_force_norm = np.linalg.norm(
+                    tangential_force_mjc
+                )
+
+                if tangential_force_norm > friction_limit:
+                    tangential_force_mjc *= (
+                            friction_limit
+                            /
+                            max(tangential_force_norm, 1e-12)
+                    )
+
+            if resting_contact:
+                com_normal_velocity = np.dot(
+                    v_spacecraft_mjc,
+                    normal_mjc
+                )
+                com_tangential_velocity_mjc = (
+                        v_spacecraft_mjc
+                        -
+                        com_normal_velocity * normal_mjc
+                )
+                gravity_tangential_mjc = (
+                        gravity_mjc
+                        -
+                        gravity_normal * normal_mjc
+                )
+                static_settle_force_mjc = (
+                        -self.spacecraft_mass
+                        *
+                        gravity_tangential_mjc
+                        -
+                        self.resting_tangential_damping
+                        *
+                        com_tangential_velocity_mjc
+                )
+                static_settle_force_mjc /= max(resting_contact_count, 1)
+                tangential_force_mjc += static_settle_force_mjc
+
+                tangential_force_norm = np.linalg.norm(
+                    tangential_force_mjc
+                )
+
+                if tangential_force_norm > friction_limit:
+                    tangential_force_mjc *= (
+                            friction_limit
+                            /
+                            max(tangential_force_norm, 1e-12)
+                    )
+
+            force_mjc += tangential_force_mjc
+            F_mjc += force_mjc
+
+            if self.apply_contact_torque:
+                r_contact_from_com_N = (
+                        R_mjc_to_bsk
+                        @
+                        r_contact_from_com_mjc
+                )
+                force_N = R_mjc_to_bsk @ force_mjc
+                torque_N = np.cross(
+                    r_contact_from_com_N,
+                    force_N
+                )
+                torque_B += C_BN @ torque_N
+
+            self.contact_force_mjc = force_mjc.copy()
+            self.contact_point_mjc = contact["pos"].copy()
+            self.contact_normal_mjc = normal_mjc.copy()
+            self.penetration = penetration
+
+        if self.apply_contact_torque and resting_contact_count > 0:
+            omega_mag = np.linalg.norm(omega_spacecraft_B)
+
+            if omega_mag > self.resting_angular_velocity_threshold:
+                damping_torque_B = (
+                        -self.resting_angular_damping
+                        *
+                        omega_spacecraft_B
+                )
+                damping_torque_norm = np.linalg.norm(damping_torque_B)
+
+                if damping_torque_norm > self.max_resting_damping_torque:
+                    damping_torque_B *= (
+                            self.max_resting_damping_torque
+                            /
+                            max(damping_torque_norm, 1e-12)
+                    )
+
+                torque_B += damping_torque_B
+
+        max_contact_torque = (
+            self.max_impact_contact_torque
+            if impact_contact_count > 0
+            else self.max_contact_torque
+        )
+        torque_norm = np.linalg.norm(torque_B)
+
+        if torque_norm > max_contact_torque:
+            torque_B *= max_contact_torque / torque_norm
+
+        F_N = R_mjc_to_bsk @ F_mjc
+
+        return F_N, torque_B
+
+    def get_contact_loads(
+            self,
+            r_spacecraft_mjc,
+            v_spacecraft_mjc,
+            omega_spacecraft_mjc,
+            C_BN,
+            R_mjc_to_bsk):
+
+        if self.use_mesh_surface_contacts:
+            return self.get_mesh_surface_contact_loads(
+                r_spacecraft_mjc,
+                v_spacecraft_mjc,
+                omega_spacecraft_mjc,
+                C_BN,
+                R_mjc_to_bsk
+            )
+
+        F_mjc = np.zeros(3)
+        torque_B = np.zeros(3)
+        omega_spacecraft_N = R_mjc_to_bsk @ omega_spacecraft_mjc
+        omega_spacecraft_B = C_BN @ omega_spacecraft_N
+
+        resting_contact_count = 0
+        impact_contact_count = 0
+
+        for i in range(self.data.ncon):
+
+            contact = self.data.contact[i]
+
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+
+            if not self.is_spacecraft_contact(geom1, geom2):
+                continue
+
+            normal_mjc = contact.frame[:3].copy()
+            normal_norm = np.linalg.norm(normal_mjc)
+
+            if normal_norm < 1e-12:
+                continue
+
+            normal_mjc /= normal_norm
+
+            if self.is_spacecraft_geom(geom1):
+                normal_mjc *= -1.0
+
+            penetration_raw = max(0.0, -contact.dist)
+
+            if penetration_raw <= 0.0:
+                continue
+
+            penetration = min(
+                penetration_raw,
+                self.max_contact_penetration
+            )
+
+            spacecraft_com_mjc = self.data.qpos[
+                self.spacecraft_qpos_adr:
+                self.spacecraft_qpos_adr + 3
+            ]
+
+            r_contact_from_com_mjc = (
+                    contact.pos - spacecraft_com_mjc
+            )
+
+            normal_lever_arm = np.dot(
+                r_contact_from_com_mjc,
+                normal_mjc
+            )
+
+            if normal_lever_arm > 0.0:
+                r_contact_from_com_mjc -= (
+                        2.0
+                        *
+                        normal_lever_arm
+                        *
+                        normal_mjc
+                )
+
+            contact_velocity_mjc = (
+                    v_spacecraft_mjc
+                    +
+                    np.cross(
+                        omega_spacecraft_mjc,
+                        r_contact_from_com_mjc
+                    )
+            )
+
+            normal_velocity = np.dot(
+                contact_velocity_mjc,
+                normal_mjc
+            )
+            tangential_velocity_mjc = (
+                    contact_velocity_mjc
+                    -
+                    normal_velocity * normal_mjc
+            )
+            tangential_speed = np.linalg.norm(
+                tangential_velocity_mjc
+            )
+
+            if (
+                    penetration <= self.resting_penetration_threshold
+                    and
+                    abs(normal_velocity) <= self.resting_velocity_threshold
+                    and
+                    tangential_speed <= self.resting_velocity_threshold
+            ):
+                resting_contact_count += 1
 
         for i in range(self.data.ncon):
 
@@ -527,11 +1158,7 @@ class LaserAltimeter(sysModel.SysModel):
             # ONLY SPACECRAFT <-> TERRAIN CONTACTS
             # ==============================================================
 
-            if (
-                    geom1 != self.spacecraft_geom_id
-                    and
-                    geom2 != self.spacecraft_geom_id
-            ):
+            if not self.is_spacecraft_contact(geom1, geom2):
                 continue
 
             # ==============================================================
@@ -558,12 +1185,12 @@ class LaserAltimeter(sysModel.SysModel):
 
             normal_mjc /= normal_norm
 
-            if geom1 == self.spacecraft_geom_id:
+            if self.is_spacecraft_geom(geom1):
                 # MuJoCo normal is spacecraft -> terrain
                 # Reverse it so force points terrain -> spacecraft.
                 normal_mjc *= -1.0
 
-            elif geom2 == self.spacecraft_geom_id:
+            elif self.is_spacecraft_geom(geom2):
                 # MuJoCo normal is terrain -> spacecraft.
                 # Already correct.
                 pass
@@ -572,18 +1199,49 @@ class LaserAltimeter(sysModel.SysModel):
             # PENETRATION
             # ==============================================================
 
-            penetration = max(0.0, -contact.dist)
+            penetration_raw = max(0.0, -contact.dist)
 
-            if penetration <= 0.0:
+
+            if penetration_raw <= 0.0:
                 continue
+
+            # --------------------------------------------------------------
+            # Do NOT allow deeply penetrating contacts to generate torque.
+            # Once penetration becomes excessive, the contact geometry is
+            # no longer trustworthy for our custom force model.
+            # --------------------------------------------------------------
+
+            penetration = min(
+                penetration_raw,
+                self.max_contact_penetration
+            )
 
             # ==============================================================
             # CONTACT POINT RELATIVE TO SPACECRAFT COM
             # ==============================================================
 
+            spacecraft_com_mjc = self.data.qpos[
+                self.spacecraft_qpos_adr:
+                self.spacecraft_qpos_adr + 3
+            ]
+
             r_contact_from_com_mjc = (
-                    contact.pos - r_spacecraft_mjc
+                    contact.pos - spacecraft_com_mjc
             )
+
+            normal_lever_arm = np.dot(
+                r_contact_from_com_mjc,
+                normal_mjc
+            )
+
+            if normal_lever_arm > 0.0:
+                r_contact_from_com_mjc -= (
+                        2.0
+                        *
+                        normal_lever_arm
+                        *
+                        normal_mjc
+                )
 
             # ==============================================================
             # CONTACT POINT VELOCITY
@@ -611,24 +1269,136 @@ class LaserAltimeter(sysModel.SysModel):
             )
 
             # ==============================================================
-            # NORMAL SPRING-DAMPER FORCE
+            # LUNAR GRAVITY AT SPACECRAFT COM
             # ==============================================================
 
-            force_magnitude = (
-                    self.contact_stiffness * penetration
-                    -
-                    self.contact_damping * normal_velocity
+            r_com_norm = np.linalg.norm(spacecraft_com_mjc)
+
+            if r_com_norm > 1e-12:
+
+                gravity_mjc = (
+                        -self.mu_moon
+                        *
+                        spacecraft_com_mjc
+                        /
+                        r_com_norm ** 3
+                )
+
+            else:
+
+                gravity_mjc = np.zeros(3)
+
+            # ==============================================================
+            # NORMAL CONTACT FORCE
+            # ==============================================================
+
+            # Component of gravity acting INTO the surface.
+            #
+            # We need the force that the terrain must provide to prevent
+            # the spacecraft from accelerating into the terrain.
+            #
+            # For a resting spacecraft:
+            #
+            #       F_normal = -(gravity · normal) * mass
+            #
+            # where normal points terrain -> spacecraft.
+            # ==============================================================
+
+            gravity_normal = np.dot(
+                gravity_mjc,
+                normal_mjc
             )
 
-            force_magnitude = max(
+            # Positive value means gravity pulls INTO the terrain.
+            required_normal_force = max(
                 0.0,
-                force_magnitude
+                -self.spacecraft_mass * gravity_normal
             )
 
-            force_magnitude = min(
-                force_magnitude,
-                self.max_contact_force
+            # ==============================================================
+            # RESTING CONTACT
+            # ==============================================================
+
+            tangential_velocity_mjc = (
+                    contact_velocity_mjc
+                    -
+                    normal_velocity * normal_mjc
             )
+
+            tangential_speed = np.linalg.norm(
+                tangential_velocity_mjc
+            )
+
+            resting_contact = (
+                    penetration <= self.resting_penetration_threshold
+                    and
+                    abs(normal_velocity) <= self.resting_velocity_threshold
+                    and
+                    tangential_speed <= self.resting_velocity_threshold
+            )
+
+            if not resting_contact:
+                impact_contact_count += 1
+
+            if resting_contact:
+
+                # ----------------------------------------------------------
+                # STATIC SUPPORT
+                #
+                # Do NOT set the normal force to zero.
+                #
+                # The terrain must cancel the component of gravity acting
+                # into the terrain.
+                # ----------------------------------------------------------
+
+                force_magnitude = (
+                        required_normal_force
+                        -
+                        self.contact_damping * normal_velocity
+                )
+
+                force_magnitude = max(
+                    0.0,
+                    force_magnitude
+                )
+
+                force_magnitude = min(
+                    force_magnitude,
+                    self.max_contact_force
+                )
+
+                force_magnitude = (
+                        force_magnitude
+                        /
+                        max(resting_contact_count, 1)
+                )
+
+            else:
+
+                # ----------------------------------------------------------
+                # IMPACT / PENETRATION RESPONSE
+                # ----------------------------------------------------------
+
+                impact_penetration = min(
+                    penetration_raw,
+                    self.max_impact_contact_penetration
+                )
+
+                force_magnitude = (
+                        self.contact_stiffness * impact_penetration
+                        -
+                        self.contact_damping * normal_velocity
+                )
+
+                force_magnitude = max(
+                    0.0,
+                    force_magnitude
+                )
+
+                force_magnitude = min(
+                    force_magnitude,
+                    self.max_contact_force
+                )
 
             force_mjc = (
                     force_magnitude * normal_mjc
@@ -649,48 +1419,57 @@ class LaserAltimeter(sysModel.SysModel):
             # TANGENTIAL FRICTION
             # ==============================================================
 
-            tangential_velocity_mjc = (
-                    contact_velocity_mjc
-                    -
-                    normal_velocity * normal_mjc
+            com_normal_velocity = np.dot(
+                v_spacecraft_mjc,
+                normal_mjc
             )
-
-            tangential_speed = np.linalg.norm(
-                tangential_velocity_mjc
+            com_tangential_velocity_mjc = (
+                    v_spacecraft_mjc
+                    -
+                    com_normal_velocity * normal_mjc
             )
 
             tangential_force_mjc = np.zeros(3)
+            friction_limit = (
+                    self.contact_friction_coefficient
+                    *
+                    force_magnitude
+            )
 
-            if tangential_speed > 1e-12:
+            # ==============================================================
+            # STATIC / SLIDING FRICTION
+            # ==============================================================
 
-                # ----------------------------------------------------------
-                # Maximum available Coulomb friction
-                # ----------------------------------------------------------
+            if tangential_speed > 1e-8:
 
-                friction_limit = (
-                        self.contact_friction_coefficient
-                        *
-                        force_magnitude
+                tangential_direction = (
+                        tangential_velocity_mjc
+                        /
+                        tangential_speed
                 )
 
                 # ----------------------------------------------------------
-                # Viscous friction / damping
-                #
-                # This is what actually produces a friction force.
-                # It opposes BOTH:
-                #
-                #   translational sliding
-                #
-                #   rotational motion at the contact point
-                #
-                # because tangential_velocity includes omega x r.
+                # SLIDING FRICTION
                 # ----------------------------------------------------------
 
                 tangential_force_mjc = (
-                        -self.contact_tangential_damping
+                        -friction_limit
                         *
-                        tangential_velocity_mjc
+                        tangential_direction
                 )
+
+                # ----------------------------------------------------------
+                # Optional viscous damping
+                # ----------------------------------------------------------
+
+                if self.contact_tangential_damping > 0.0:
+                    viscous_force = (
+                            -self.contact_tangential_damping
+                            *
+                            tangential_velocity_mjc
+                    )
+
+                    tangential_force_mjc += viscous_force
 
                 # ----------------------------------------------------------
                 # Coulomb friction limit
@@ -704,50 +1483,128 @@ class LaserAltimeter(sysModel.SysModel):
                     tangential_force_mjc *= (
                             friction_limit
                             /
-                            tangential_force_norm
+                            max(tangential_force_norm, 1e-12)
                     )
 
-                # ----------------------------------------------------------
-                # SETTLING
-                #
-                # Once the contact point is moving very slowly, use a
-                # stronger damping force to eliminate residual creeping.
-                # ----------------------------------------------------------
+            # ==============================================================
+            # RESTING VELOCITY SNAP
+            # ==============================================================
 
-                if tangential_speed < self.settle_velocity_threshold:
+            if resting_contact:
+                gravity_tangential_mjc = (
+                        gravity_mjc
+                        -
+                        gravity_normal * normal_mjc
+                )
+                static_settle_force_mjc = (
+                        -self.spacecraft_mass
+                        *
+                        gravity_tangential_mjc
+                        -
+                        self.resting_tangential_damping
+                        *
+                        com_tangential_velocity_mjc
+                )
 
-                    settle_force = (
+                static_settle_force_mjc /= max(
+                    resting_contact_count,
+                    1
+                )
+
+                if 1e-10 < tangential_speed < self.settle_velocity_threshold:
+                    settle_force_mjc = (
                             -self.settle_damping
                             *
                             tangential_velocity_mjc
                     )
 
                     settle_force_norm = np.linalg.norm(
-                        settle_force
+                        settle_force_mjc
                     )
 
-                    if settle_force_norm > friction_limit:
-                        settle_force *= (
-                                friction_limit
+                    settle_limit = min(
+                        friction_limit,
+                        self.max_settle_force / max(resting_contact_count, 1)
+                    )
+
+                    if settle_force_norm > settle_limit:
+                        settle_force_mjc *= (
+                                settle_limit
                                 /
                                 max(settle_force_norm, 1e-12)
                         )
 
-                    tangential_force_mjc = settle_force
+                    tangential_force_mjc = settle_force_mjc
+
+                tangential_force_mjc += static_settle_force_mjc
+
+                tangential_force_norm = np.linalg.norm(
+                    tangential_force_mjc
+                )
+
+                if tangential_force_norm > friction_limit:
+                    tangential_force_mjc *= (
+                            friction_limit
+                            /
+                            max(tangential_force_norm, 1e-12)
+                    )
+
+            # --------------------------------------------------------------
+            # TOTAL CONTACT FORCE
+            # --------------------------------------------------------------
 
             force_mjc += tangential_force_mjc
 
-            # ==============================================================
-            # ACCUMULATE FORCE
-            # ==============================================================
+            # --------------------------------------------------------------
+            # LINEAR FORCE
+            # --------------------------------------------------------------
 
             F_mjc += force_mjc
 
-            # ==============================================================
+            # --------------------------------------------------------------
             # TORQUE
-            # ==============================================================
+            #
+            # IMPORTANT:
+            # Only tangential friction should generate the rotational
+            # damping torque.
+            #
+            # The normal spring force is allowed to push the spacecraft
+            # vertically, but we do not allow deep penetration of the
+            # terrain to create a gigantic rotational impulse.
+            # --------------------------------------------------------------
 
-            if self.apply_contact_torque:
+            if self.apply_contact_torque and resting_contact:
+                r_friction_from_com_mjc = (
+                        np.dot(
+                            r_contact_from_com_mjc,
+                            normal_mjc
+                        )
+                        *
+                        normal_mjc
+                )
+
+                r_friction_from_com_N = (
+                        R_mjc_to_bsk
+                        @
+                        r_friction_from_com_mjc
+                )
+
+                friction_force_N = (
+                        R_mjc_to_bsk
+                        @
+                        tangential_force_mjc
+                )
+
+                torque_N = np.cross(
+                    r_friction_from_com_N,
+                    friction_force_N
+                )
+
+                torque_B += (
+                        C_BN @ torque_N
+                )
+
+            elif self.apply_contact_torque:
                 r_contact_from_com_N = (
                         R_mjc_to_bsk
                         @
@@ -766,9 +1623,7 @@ class LaserAltimeter(sysModel.SysModel):
                 )
 
                 torque_B += (
-                        C_BN
-                        @
-                        torque_N
+                        C_BN @ torque_N
                 )
 
             # ==============================================================
@@ -782,6 +1637,105 @@ class LaserAltimeter(sysModel.SysModel):
             self.penetration = penetration
 
         # ==============================================================
+        # RESTING ROTATIONAL DAMPING
+        # ==============================================================
+
+        if self.apply_contact_torque and resting_contact_count > 0:
+
+            omega_mag = np.linalg.norm(omega_spacecraft_B)
+
+            if omega_mag > self.resting_angular_velocity_threshold:
+                inertia_B = np.array(
+                    self.spacecraft_inertia_B,
+                    dtype=float
+                )
+                angular_momentum_B = inertia_B @ omega_spacecraft_B
+                angular_momentum_norm = np.linalg.norm(
+                    angular_momentum_B
+                )
+                angular_damping = self.resting_angular_damping
+
+                if omega_mag < self.resting_angular_settle_threshold:
+                    angular_damping = self.resting_angular_settle_damping
+
+                damping_torque_B = (
+                        -angular_damping
+                        *
+                        omega_spacecraft_B
+                )
+
+                damping_torque_norm = np.linalg.norm(
+                    damping_torque_B
+                )
+                dt = max(self._time_step_s, 1.0e-9)
+                stopping_torque_limit = angular_momentum_norm / dt
+                damping_torque_limit = min(
+                    self.max_resting_damping_torque,
+                    stopping_torque_limit
+                )
+
+                if damping_torque_norm > damping_torque_limit:
+                    damping_torque_B *= (
+                            damping_torque_limit
+                            /
+                            max(damping_torque_norm, 1e-12)
+                    )
+
+                torque_B += damping_torque_B
+
+        if (
+                self.apply_contact_torque
+                and
+                resting_contact_count > 0
+        ):
+            omega_mag = np.linalg.norm(omega_spacecraft_B)
+
+            if (
+                    self.resting_angular_velocity_threshold
+                    <
+                    omega_mag
+                    <
+                    self.resting_angular_settle_threshold
+            ):
+                omega_direction_B = (
+                        omega_spacecraft_B
+                        /
+                        omega_mag
+                )
+                torque_along_omega = np.dot(
+                    torque_B,
+                    omega_direction_B
+                )
+
+                if torque_along_omega < 0.0:
+                    torque_B = (
+                            torque_along_omega
+                            *
+                            omega_direction_B
+                    )
+                else:
+                    torque_B[:] = 0.0
+
+                inertia_B = np.array(
+                    self.spacecraft_inertia_B,
+                    dtype=float
+                )
+                angular_momentum_B = inertia_B @ omega_spacecraft_B
+                stopping_torque_limit = (
+                        np.linalg.norm(angular_momentum_B)
+                        /
+                        max(self._time_step_s, 1.0e-9)
+                )
+                torque_norm = np.linalg.norm(torque_B)
+
+                if torque_norm > stopping_torque_limit:
+                    torque_B *= (
+                            stopping_torque_limit
+                            /
+                            max(torque_norm, 1e-12)
+                    )
+
+        # ==============================================================
         # TORQUE LIMIT
         # ==============================================================
 
@@ -790,11 +1744,17 @@ class LaserAltimeter(sysModel.SysModel):
         #print("F_N:", R_mjc_to_bsk @ F_mjc)
         #print("magnitude:", np.linalg.norm(F_mjc))
 
+        max_contact_torque = (
+            self.max_impact_contact_torque
+            if impact_contact_count > 0
+            else self.max_contact_torque
+        )
+        torque_before_clamp = torque_B.copy()
         torque_norm = np.linalg.norm(torque_B)
 
-        if torque_norm > self.max_contact_torque:
+        if torque_norm > max_contact_torque:
             torque_B *= (
-                    self.max_contact_torque
+                    max_contact_torque
                     /
                     torque_norm
             )
@@ -802,20 +1762,18 @@ class LaserAltimeter(sysModel.SysModel):
         print("\nTORQUE DEBUG")
 
         print("torque before clamp:")
-        print(torque_B)
+        print(torque_before_clamp)
 
         print("torque magnitude:")
         print(np.linalg.norm(torque_B))
 
-        omega_B = C_BN @ omega_spacecraft_mjc
-
         print("omega_B:")
-        print(omega_B)
+        print(omega_spacecraft_B)
 
-        if np.linalg.norm(omega_B) > 1e-12:
+        if np.linalg.norm(omega_spacecraft_B) > 1e-12:
             print(
                 "torque · omega:",
-                np.dot(torque_B, omega_B)
+                np.dot(torque_B, omega_spacecraft_B)
             )
 
         # ==============================================================

@@ -86,6 +86,82 @@ def _xml_vec(values):
     return " ".join(str(float(value)) for value in values)
 
 
+def _spacecraft_collision_geoms_xml(margin):
+    return f"""
+                        <geom name="spacecraft_core"
+                              type="box"
+                              pos="0 0 0.05"
+                              size="0.42 0.42 0.25"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+
+                        <geom name="spacecraft_leg_1"
+                              type="capsule"
+                              fromto="0.30 0.30 -0.08 0.78 0.78 -0.58"
+                              size="0.035"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+
+                        <geom name="spacecraft_leg_2"
+                              type="capsule"
+                              fromto="-0.30 0.30 -0.08 -0.78 0.78 -0.58"
+                              size="0.035"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+
+                        <geom name="spacecraft_leg_3"
+                              type="capsule"
+                              fromto="0.30 -0.30 -0.08 0.78 -0.78 -0.58"
+                              size="0.035"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+
+                        <geom name="spacecraft_leg_4"
+                              type="capsule"
+                              fromto="-0.30 -0.30 -0.08 -0.78 -0.78 -0.58"
+                              size="0.035"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+
+                        <geom name="spacecraft_foot_1"
+                              type="box"
+                              pos="0.82 0.82 -0.62"
+                              size="0.18 0.18 0.04"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+
+                        <geom name="spacecraft_foot_2"
+                              type="box"
+                              pos="-0.82 0.82 -0.62"
+                              size="0.18 0.18 0.04"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+
+                        <geom name="spacecraft_foot_3"
+                              type="box"
+                              pos="0.82 -0.82 -0.62"
+                              size="0.18 0.18 0.04"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+
+                        <geom name="spacecraft_foot_4"
+                              type="box"
+                              pos="-0.82 -0.82 -0.62"
+                              size="0.18 0.18 0.04"
+                              contype="1"
+                              conaffinity="1"
+                              margin="{margin}"/>
+"""
+
+
 def initialize_mujoco(LF:int):
 
     obj_data = clean_obj(
@@ -138,13 +214,10 @@ def get_xml(LF):
 
                         <freejoint name="spacecraft_freejoint"/>
 
-                        <geom name="spacecraft_body"
-                              type="box"
-                              size="0.5 0.5 0.2"
-                              margin="0.25"/>
+{_spacecraft_collision_geoms_xml(0.25)}
 
                         <site name="laser_altimeter"
-                              pos="0 0 -0.2"
+                              pos="0 0 -0.30"
                               euler="90 0 0"
                               size="0.03"/>
 
@@ -185,23 +258,18 @@ def get_xml(LF):
                       mesh="lunarTerrain"
                       pos="{_xml_vec(TERRAIN_POSITION_MUJOCO)}"
                       euler="{_xml_vec(TERRAIN_ROTATION_MUJOCO)}"
-                      contype="1"
-                      conaffinity="1"
+                      contype="0"
+                      conaffinity="0"
                       margin="0.0"/>
 
                 <body name="spacecraft">
 
                     <freejoint name="spacecraft_freejoint"/>
 
-                    <geom name="spacecraft_body"
-                          type="box"
-                          size="0.5 0.5 0.2"
-                          contype="1"
-                          conaffinity="1"
-                          margin="0.0"/>
+{_spacecraft_collision_geoms_xml(0.0)}
 
                     <site name="laser_altimeter"
-                          pos="0 0 -0.2"
+                          pos="0 0 -0.30"
                           euler="90 0 0"
                           size="0.03"/>
 
@@ -251,15 +319,10 @@ def get_xml(LF):
 
                     <freejoint name="spacecraft_freejoint"/>
 
-                    <geom name="spacecraft_body"
-                          type="box"
-                          size="0.5 0.5 0.2"
-                          contype="1"
-                          conaffinity="1"
-                          margin="0.25"/>
+{_spacecraft_collision_geoms_xml(0.25)}
 
                     <site name="laser_altimeter"
-                          pos="0 0 -0.2"
+                          pos="0 0 -0.30"
                           euler="90 0 0"
                           size="0.03"/>
 
