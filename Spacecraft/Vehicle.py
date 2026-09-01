@@ -3,7 +3,7 @@ from Basilisk.simulation import spacecraft, extForceTorque
 from Spacecraft.Mujoco import MujocoPhysicsEngine as MPE
 
 class Vehicle:
-    def __init__(self, sim, name, sampling_ns=0.01):
+    def __init__(self, sim, name, sampling_ns, spacecraft_attitude_MRP, spacecraft_attitude_rate, spacecraft_mass, spacecraft_inertia):
         self.imus = {}              # sensor IMU initialization, if you have multiple IMUs they get stored here
         self.star_trackers = {}     # sensor Star Tracker initialization, if you have multiple IMUs they get stored here
         self.altimeters = {}
@@ -16,6 +16,10 @@ class Vehicle:
         self.contact_force = extForceTorque.ExtForceTorque()
         self.contact_force.ModelTag = "TerrainContactForce"
         self.lander.addDynamicEffector(self.contact_force)
+        self.lander.hub.sigma_BNInit = spacecraft_attitude_MRP
+        self.lander.hub.omega_BN_BInit = spacecraft_attitude_rate
+        self.lander.hub.mHub = spacecraft_mass  # CoM currently undefined to my knowledge
+        self.lander.hub.IHubPntBc_B = spacecraft_inertia
 
 
 
@@ -31,13 +35,13 @@ class Vehicle:
 
 
 
-    def initialize_sensors(self, SM, LF:int):
+    def initialize_sensors(self, SM, samp, LF:int):
         self.SM = SM
 
         # Add sensors to spacecraft
         self.SM.add_imu("IMU", self.lander.scStateOutMsg)
         self.SM.add_star_tracker("ST", self.lander.scStateOutMsg)
-        self.SM.altimeter = MPE.initialize_mujoco(LF)
+        self.SM.altimeter = MPE.initialize_mujoco(LF,self.lander.hub.mHub, self.lander.hub.IHubPntBc_B, samp)
 
         self.SM.add_altimeter(self.SM.altimeter,self.lander.scStateOutMsg)
 

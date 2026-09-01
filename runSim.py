@@ -12,8 +12,6 @@ import Environment.Dynamics as Dynamics
 from Visualization import initialize_vizard
 from Environment import Environment as Env
 
-
-
 matplotlib.use("TkAgg")
 
 CLOSE_TO_LUNAR_SURFACE = True #Turn to False if you want orbital, turn to true if you want suborbital. This only controls the visualization
@@ -26,7 +24,7 @@ LOW_FIDELITY_SURFACE = 1 #If CLOSE_TO_LUNAR_SURFACE is false, you may want this 
 DISABLE_GRAVITY = False #True -> Turns off all gravity with the exception of the sun.
 
 
-runtime = 100.0 #how long to run the simulation for, in seconds
+runtime = 20.0 #how long to run the simulation for, in seconds
 samp = 0.01 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment
@@ -41,14 +39,14 @@ orbital_parameters = {
         }
 
 
-spacecraft_velocity_override = [0, 0, 0] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
+spacecraft_velocity_override = [0, 10, 0] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
 spacecraft_position_override = [0,-1737500.0,-20] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
 
 mrp1, mrp2, mrp3 = RigidBodyKinematics.euler3212MRP(np.deg2rad([0.0, 0.0, 90.0])) #input as degrees here for spacecraft rotation!
 
-spacecraft_attitude_MRP = [[mrp1], [mrp2], [mrp3]] #Starting attitude of spacecraft with respect to the body and inertial frame as a modified rodrigues parameter  (N->P)
-spacecraft_attitude_rate = [[0.0], [0.0], [0.0]]  # Current angular velocity with body frame relative to inertial frame (rad/s)
-spacecraft_mass = 2120.0                    #kg, not sure yet how to deal with CoM or where that is defined
+spacecraft_attitude_MRP = [[mrp1], [mrp2], [mrp3]]  #Starting attitude of spacecraft with respect to the body and inertial frame as a modified rodrigues parameter  (N->P)
+spacecraft_attitude_rate = [[0.0], [0.0], [0.0]]    # Current angular velocity with body frame relative to inertial frame (rad/s)
+spacecraft_mass = 2120.0                            #kg, not sure yet how to deal with CoM or where that is defined
 spacecraft_inertia = [
     [1014.49, 0.0, 0.0],
     [0.0, 1014.49, 0.0],
@@ -64,17 +62,14 @@ task = sim.CreateNewTask("record", sampling_ns)      # Create a new task in the 
 process.addTask(task)                                               # Add created task to the process
 
 #Continued simulation modules setup
-sc=Vehicle(sim, SPACECRAFT_BODY_NAME, sampling_ns)                                #initialize the vehicle
-sc.lander.hub.sigma_BNInit = spacecraft_attitude_MRP
-sc.lander.hub.omega_BN_BInit = spacecraft_attitude_rate
-sc.lander.hub.mHub = spacecraft_mass                    #CoM currently undefined to my knowledge
-sc.lander.hub.IHubPntBc_B = spacecraft_inertia
+sc=Vehicle(sim, SPACECRAFT_BODY_NAME, sampling_ns, spacecraft_attitude_MRP, spacecraft_attitude_rate, spacecraft_mass, spacecraft_inertia)                                #initialize the vehicle
+
 
 sc.terrain = Env.create_terrain_spacecraft()  #Must happen before sc.initialize_sensors()
 
 SM = SensorsManager(sc, sampling_ns)                                #initialize the sensors manager
 
-sc.initialize_sensors(SM,LOW_FIDELITY_SURFACE)                                   #attach sensors to vehicle and set up mujoco physics for the altimeter sensor
+sc.initialize_sensors(SM,samp, LOW_FIDELITY_SURFACE)                                   #attach sensors to vehicle and set up mujoco physics for the altimeter sensor
 SM.altimeter.spacecraft_mass = spacecraft_mass
 SM.altimeter.spacecraft_inertia_B = np.array(spacecraft_inertia, dtype=float)
 

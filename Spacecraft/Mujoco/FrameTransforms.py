@@ -1,8 +1,8 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
+from Environment.Dynamics import r_moon
 
 
-MOON_RADIUS = 1737400.0
 
 # Basilisk uses the Moon-centered simulation frame. MuJoCo is used only as a
 # geometry/raycast backend, with its Z axis aligned to Basilisk's south-pole Y.
@@ -13,7 +13,7 @@ R_BSK_TO_MUJOCO = np.array([
 ])
 R_MUJOCO_TO_BSK = R_BSK_TO_MUJOCO.T
 
-TERRAIN_POSITION_BSK = np.array([0.0, -MOON_RADIUS, 0.0])
+TERRAIN_POSITION_BSK = np.array([0.0, -r_moon, 0.0])
 TERRAIN_POSITION_MUJOCO = R_BSK_TO_MUJOCO @ TERRAIN_POSITION_BSK
 
 # MuJoCo needs the collision mesh flipped to expose the rough side to raycasts.

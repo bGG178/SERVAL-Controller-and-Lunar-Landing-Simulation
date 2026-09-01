@@ -2,11 +2,11 @@ import mujoco
 import numpy as np
 from Sensors.Laser.Altimeter import LaserAltimeter
 from Spacecraft.Mujoco.FrameTransforms import (
-    MOON_RADIUS,
     TERRAIN_POSITION_MUJOCO,
     TERRAIN_ROTATION_MUJOCO,
     TERRAIN_SCALE,
 )
+from Environment.Dynamics import r_moon
 
 
 OBJ_PATH = "Environment/Objects/SouthPole.obj"
@@ -162,34 +162,20 @@ def _spacecraft_collision_geoms_xml(margin):
 """
 
 
-def initialize_mujoco(LF:int):
+def initialize_mujoco(LF:int,scm,sci,samp):
 
-    obj_data = clean_obj(
-        "Environment/Objects/SouthPole.obj"
-    )
+
+    obj_data = clean_obj("Environment/Objects/SouthPole.obj")
 
     XML= get_xml(LF)
 
-    model = mujoco.MjModel.from_xml_string(
-        XML,
-        assets={
-            "SouthPole.obj": obj_data
-        }
-    )
+    model = mujoco.MjModel.from_xml_string(XML,assets={"SouthPole.obj": obj_data})
 
     data = mujoco.MjData(model)
 
-    laser_id = mujoco.mj_name2id(
-        model,
-        mujoco.mjtObj.mjOBJ_SITE,
-        "laser_altimeter"
-    )
+    laser_id = mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_SITE,"laser_altimeter")
 
-    altimeter = LaserAltimeter(
-        model,
-        data,
-        laser_id
-    )
+    altimeter = LaserAltimeter(model,data,laser_id,scm,sci,samp)
 
     return altimeter
 
@@ -200,17 +186,17 @@ def get_xml(LF):
             <mujoco model="laser_altimeter">
 
                 <option gravity="0 0 -9.81"/>
-                <statistic extent="{MOON_RADIUS * 2}"/>
+                <statistic extent="{r_moon * 2}"/>
 
                 <worldbody>
 
                     <geom name="moon"
                           type="sphere"
-                          size="{MOON_RADIUS}"
+                          size="{r_moon}"
                           pos="0 0 0"
                           margin="0.25"/>
 
-                    <body name="spacecraft" pos="0 0 {MOON_RADIUS + 1500}">
+                    <body name="spacecraft" pos="0 0 {r_moon + 1500}">
 
                         <freejoint name="spacecraft_freejoint"/>
 
@@ -290,14 +276,14 @@ def get_xml(LF):
             </asset>
 
             <option gravity="0 0 0"/>
-            <statistic extent="{MOON_RADIUS * 2}"/>
+            <statistic extent="{r_moon * 2}"/>
 
             <worldbody>
 
                 <!-- Smooth spherical Moon reference -->
                 <geom name="moon_sphere"
                       type="sphere"
-                      size="{MOON_RADIUS}"
+                      size="{r_moon}"
                       pos="0 0 0"
 
                       contype="1"
