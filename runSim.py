@@ -21,16 +21,16 @@ LOW_FIDELITY_SURFACE = 1 #If CLOSE_TO_LUNAR_SURFACE is false, you may want this 
                         # Setting 0-> Creates a smooth sphere mesh for the altimeter raycast collision
                         # Setting 1-> Creates a lunar terrain obj only, currently at the lunar south pole only
                         # Setting 2-> Creates both a smooth sphere mesh and lunar terrain obj, but this is UNTESTED and may result in unintended clipping when points on the OBJ are below lunar sea level
-DISABLE_GRAVITY = False #True -> Turns off all gravity with the exception of the sun.
+DISABLE_GRAVITY = True #True -> Turns off all gravity with the exception of the sun.
 
 
-runtime = 20.0 #how long to run the simulation for, in seconds
+runtime = 25.0 #how long to run the simulation for, in seconds
 samp = 0.01 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment
 
 orbital_parameters = {
-            "altitude": 100.0, # Will define orbit Semi-major axis (m). Takes the moon radius + altitude to define it
+            "altitude": 10000.0, # Will define orbit Semi-major axis (m). Takes the moon radius + altitude to define it
             "eccentricity": 0.0, # Eccentricity (0 = circular orbit, 0 < e < 1 = elliptical)
             "inclination deg": 0.0, # Inclination (rad)
             "right ascension of ascending node deg": 0.0, # Right Ascension of the Ascending Node (RAAN) (rad)
@@ -39,8 +39,8 @@ orbital_parameters = {
         }
 
 
-spacecraft_velocity_override = [0, 10, 0] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
-spacecraft_position_override = [0,-1737500.0,-20] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
+spacecraft_velocity_override = [10, 0, -10] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
+spacecraft_position_override = [0,-1737500.0,-50] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
 
 mrp1, mrp2, mrp3 = RigidBodyKinematics.euler3212MRP(np.deg2rad([0.0, 0.0, 90.0])) #input as degrees here for spacecraft rotation!
 

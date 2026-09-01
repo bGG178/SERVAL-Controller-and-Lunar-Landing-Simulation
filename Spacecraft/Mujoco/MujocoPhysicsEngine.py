@@ -7,9 +7,9 @@ from Spacecraft.Mujoco.FrameTransforms import (
     TERRAIN_SCALE,
 )
 from Environment.Dynamics import r_moon
+OBJ_NAME = "SouthPole_Defragged.obj"
 
-
-OBJ_PATH = "Environment/Objects/SouthPole.obj"
+OBJ_PATH = f"Environment/Objects/{OBJ_NAME}"
 def clean_obj(obj_path):
     with open(obj_path, "r", errors="replace") as f:
         lines = f.readlines()
@@ -165,11 +165,11 @@ def _spacecraft_collision_geoms_xml(margin):
 def initialize_mujoco(LF:int,scm,sci,samp):
 
 
-    obj_data = clean_obj("Environment/Objects/SouthPole.obj")
+    obj_data = clean_obj(f"Environment/Objects/{OBJ_NAME}")
 
     XML= get_xml(LF)
 
-    model = mujoco.MjModel.from_xml_string(XML,assets={"SouthPole.obj": obj_data})
+    model = mujoco.MjModel.from_xml_string(XML,assets={OBJ_NAME: obj_data})
 
     data = mujoco.MjData(model)
 
@@ -228,7 +228,7 @@ def get_xml(LF):
 
             <asset>
                 <mesh name="lunarTerrain"
-                      file="SouthPole.obj"
+                      file="{OBJ_NAME}"
                       scale="{_xml_vec(TERRAIN_SCALE)}"
                       maxhullvert="1000000"/>
             </asset>
@@ -271,7 +271,7 @@ def get_xml(LF):
 
             <asset>
                 <mesh name="south_pole"
-                      file="SouthPole.obj"
+                      file="{OBJ_NAME}"
                       scale="{_xml_vec(TERRAIN_SCALE)}"/>
             </asset>
 

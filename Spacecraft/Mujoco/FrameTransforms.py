@@ -17,7 +17,7 @@ TERRAIN_POSITION_BSK = np.array([0.0, -r_moon, 0.0])
 TERRAIN_POSITION_MUJOCO = R_BSK_TO_MUJOCO @ TERRAIN_POSITION_BSK
 
 # MuJoCo needs the collision mesh flipped to expose the rough side to raycasts.
-TERRAIN_ROTATION_MUJOCO = [180.0, 0.0, 0.0]
+TERRAIN_ROTATION_MUJOCO = [180.0, 0.0, 90.0]
 
 # Vizard renders the visible terrain side correctly without the MuJoCo collision
 # flip. Keep this separate from the raycast/collision orientation.

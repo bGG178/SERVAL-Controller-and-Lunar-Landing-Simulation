@@ -3,6 +3,7 @@ from Basilisk.utilities import vizSupport
 import Spacecraft.Mujoco.FrameTransforms as TerrainFrame
 from Basilisk.simulation import vizInterface
 from Basilisk.utilities import macros
+from Spacecraft.Mujoco.MujocoPhysicsEngine import OBJ_NAME
 
 def initialize_vizard(sim, sc):
 
@@ -80,7 +81,7 @@ def initialize_vizard(sim, sc):
             os.path.join(
                 "Environment",
                 "Objects",
-                "SouthPole.obj"
+                f"{OBJ_NAME}"
             )
         )
 
