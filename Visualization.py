@@ -14,6 +14,13 @@ def initialize_vizard(sim, sc):
         # =========================================================
         imx_light = vizInterface.Light()
 
+        # Basilisk's LightVector stores raw Light* pointers, not owning copies.
+        # Keep the Python owner alive until the simulation is released; a local
+        # light can otherwise be freed before Vizard's first native update.
+        if not hasattr(sim, "_vizard_lights"):
+            sim._vizard_lights = []
+        sim._vizard_lights.append(imx_light)
+
         imx_light.label = "IMX Light"
 
         # Position relative to IMX spacecraft body frame
@@ -45,6 +52,7 @@ def initialize_vizard(sim, sc):
             "record",
             [sc.lander, sc.terrain],
             saveFile=__file__,
+            thrEffectorList=[[engine.thruster for engine in sc.engines.values()], None],
 
             # First list = sc.lander lights
             # Second list = sc.terrain lights

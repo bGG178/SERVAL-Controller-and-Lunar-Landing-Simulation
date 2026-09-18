@@ -1,12 +1,16 @@
 from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, unitTestSupport
 from Basilisk.simulation import spacecraft, extForceTorque
 from Spacecraft.Mujoco import MujocoPhysicsEngine as MPE
+from Spacecraft.Thrusters.DummyController import DummyController
 
 class Vehicle:
     def __init__(self, sim, name, sampling_ns, spacecraft_attitude_MRP, spacecraft_attitude_rate, spacecraft_mass, spacecraft_inertia):
         self.imus = {}              # sensor IMU initialization, if you have multiple IMUs they get stored here
         self.star_trackers = {}     # sensor Star Tracker initialization, if you have multiple IMUs they get stored here
         self.altimeters = {}
+        self.engines = {}
+        self.thruster_recorders = {}
+        self.thruster_controller = None
         self.lander = spacecraft.Spacecraft()        # Create a spacecraft instance from the spacecraft basilisk module
         self.lander.ModelTag = name             # Tag the spacecraft with a name
         self.sampling_ns = sampling_ns
@@ -34,6 +38,23 @@ class Vehicle:
 
 
 
+
+    def initialize_thrusters(self, engines, enabled_engines=(), task_name="record"):
+        """Attach named engines and their constant-on controller before sim initialization."""
+        if self.thruster_controller is not None:
+            raise RuntimeError("Thrusters have already been initialized.")
+        engines = dict(engines)
+        controller = DummyController(
+            engines, self.sampling_ns * macros.NANO2SEC, enabled_engines
+        )
+        self.engines = engines
+        self.thruster_controller = controller
+        self.sim.AddModelToTask(task_name, controller, ModelPriority=20)
+        for name, engine in engines.items():
+            engine.attach(self.lander, self.sim, task_name, priority=10)
+            recorder = engine.thruster.thrusterOutMsgs[0].recorder(self.sampling_ns)
+            self.thruster_recorders[name] = recorder
+            self.sim.AddModelToTask(task_name, recorder, ModelPriority=-10)
 
     def initialize_sensors(self, SM, samp, LF:int):
         self.SM = SM
@@ -114,6 +135,15 @@ class Vehicle:
             "imu": imu_output,
             "star_tracker": st_output,
             "altimeter": alt_output,
+            "thrusters": {
+                name: {
+                    "time_ns": recorder.times(),
+                    "thrustForce_B": recorder.thrustForce_B,
+                    "thrustFactor": recorder.thrustFactor,
+                    "thrusterDirection": recorder.thrusterDirection,
+                }
+                for name, recorder in self.thruster_recorders.items()
+            },
             "true_data": self.lander_true_status()
         }
 

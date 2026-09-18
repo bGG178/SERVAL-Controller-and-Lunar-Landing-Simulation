@@ -1,4 +1,5 @@
 from Spacecraft.Vehicle import Vehicle
+from Spacecraft.Thrusters.Thrusters import RCS_thruster, MainEngine, make_config
 import matplotlib
 from scipy.spatial.transform import Rotation as R
 from matplotlib.animation import FuncAnimation
@@ -21,10 +22,46 @@ LOW_FIDELITY_SURFACE = 1 #If CLOSE_TO_LUNAR_SURFACE is false, you may want this 
                         # Setting 0-> Creates a smooth sphere mesh for the altimeter raycast collision
                         # Setting 1-> Creates a lunar terrain obj only, currently at the lunar south pole only
                         # Setting 2-> Creates both a smooth sphere mesh and lunar terrain obj, but this is UNTESTED and may result in unintended clipping when points on the OBJ are below lunar sea level
-DISABLE_GRAVITY = True #True -> Turns off all gravity with the exception of the sun.
+DISABLE_GRAVITY = False #True -> Turns off all gravity with the exception of the sun.
+
+# Dummy propulsion settings. These are illustrative values, not calibrated IMX hardware.
+# Selected engines stay on at their configured thrust for the entire simulation.
+# Use () to coast; for example ("MainEngine", "RCS_1") fires those two engines.
+CONSTANT_ON_ENGINES = ("MainEngine")
+MAIN_ENGINE_THRUST_N = 4003.4 # CONFIRMED - From IM SEC filing "The workhorse of our engine fleet is the 900lbf thrust class VR900." Convering into newtons gives 4003.4N
+MAIN_ENGINE_ISP_S = 325.0 #CONFIRMED - Source IM2 press kit
+MAIN_ENGINE_LOCATION_B = [0.0, 0.0, -1.0]  # metres; bottom mount on body -Z
+MAIN_ENGINE_DIRECTION_B = [0.0, 0.0, 1.0]  # force vector, NOT angles; exhaust is -Z
+MAIN_ENGINE_GIMBAL_DEG = (0.0, 0.0)  # pitch/yaw relative to the engine mount
+MAIN_ENGINE_MAX_GIMBAL_RAD = 0.27
+RCS_THRUST_N = 4.45
+RCS_ISP_S = 220.0
+RCS_LAYOUT = {  # name: (location in body metres, thrust direction in body axes)
+    "RCS_1_1": ([0.5, 0, 0.8], [0, 1, 0]),
+    "RCS_1_2": ([0.5, 0, 0.8], [0, -1, 0]),
+    "RCS_1_3": ([0.5, 0, 0.8], [0, 0, 1]),
+    "RCS_1_4": ([0.5, 0, 0.8], [0, 0, -1]),
+
+    "RCS_2_1": ([-0.5, 0, 0.8], [0, 1, 0]),
+    "RCS_2_2": ([-0.5, 0, 0.8], [0, -1, 0]),
+    "RCS_2_3": ([-0.5, 0, 0.8], [0, 0, 1]),
+    "RCS_2_4": ([-0.5, 0, 0.8], [0, 0, -1]),
+
+    "RCS_3_1": ([0.0, 0.5, 0.8], [1, 0, 0]),
+    "RCS_3_2": ([0.0, 0.5, 0.8], [-1, 0, 0]),
+    "RCS_3_3": ([0.0, 0.5, 0.8], [0, 0, 1]),
+    "RCS_3_4": ([0.0, 0.5, 0.8], [0, 0, -1]),
+
+    "RCS_4_1": ([0.0, -0.5, 0.8], [1, 0, 0]),
+    "RCS_4_2": ([0.0, -0.5, 0.8], [-1, 0, 0]),
+    "RCS_4_3": ([0.0, -0.5, 0.8], [0, 0, 1]),
+    "RCS_4_4": ([0.0, -0.5, 0.8], [0, 0, -1]),
 
 
-runtime = 25.0 #how long to run the simulation for, in seconds
+}
+
+
+runtime = 20.0 #how long to run the simulation for, in seconds
 samp = 0.01 #sampling rate, ie how often to take measurements, in seconds
 sampling_ns = macros.sec2nano(samp)  # how often to sample sensors in ns
 sim = SimulationBaseClass.SimBaseClass()                        # Initialize/instantiate a simulation environment
@@ -39,7 +76,7 @@ orbital_parameters = {
         }
 
 
-spacecraft_velocity_override = [10, 0, -10] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
+spacecraft_velocity_override = [0, 20, 0] #At the south pole, +Y is downward toward the Moon and Z is horizontal/tangent to the surface.
 spacecraft_position_override = [0,-1737500.0,-50] #If you wanted to change the position relative to the moon you could do it here. I haven't found a real important use for this yet.
 
 mrp1, mrp2, mrp3 = RigidBodyKinematics.euler3212MRP(np.deg2rad([0.0, 0.0, 90.0])) #input as degrees here for spacecraft rotation!
@@ -64,6 +101,21 @@ process.addTask(task)                                               # Add create
 #Continued simulation modules setup
 sc=Vehicle(sim, SPACECRAFT_BODY_NAME, sampling_ns, spacecraft_attitude_MRP, spacecraft_attitude_rate, spacecraft_mass, spacecraft_inertia)                                #initialize the vehicle
 
+
+main_engine = MainEngine(
+    make_config(MAIN_ENGINE_THRUST_N, MAIN_ENGINE_ISP_S, MAIN_ENGINE_DIRECTION_B),
+    location=MAIN_ENGINE_LOCATION_B,
+    max_gimbal=MAIN_ENGINE_MAX_GIMBAL_RAD,
+)
+main_engine.set_gimbal(*np.deg2rad(MAIN_ENGINE_GIMBAL_DEG))
+engines = {main_engine.name: main_engine}
+for name, (location, direction) in RCS_LAYOUT.items():
+    if name in engines:
+        raise ValueError(f"Duplicate engine name: {name}")
+    engines[name] = RCS_thruster(
+        make_config(RCS_THRUST_N, RCS_ISP_S, direction), name=name, location=location
+    )
+sc.initialize_thrusters(engines, CONSTANT_ON_ENGINES)
 
 sc.terrain = Env.create_terrain_spacecraft()  #Must happen before sc.initialize_sensors()
 
