@@ -4,6 +4,7 @@ from Basilisk.simulation import spacecraft
 from .IMU import IMU
 from .StarTracker import StarTracker
 
+from .FaultInjection import create_default_faults #added by Michelle
 
 class SensorsManager:
     def __init__(self, Vehicle, sampling_ns=0.01):
