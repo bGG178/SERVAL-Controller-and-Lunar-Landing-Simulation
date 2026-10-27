@@ -144,6 +144,88 @@ sim.ExecuteSimulation()
 
 out = sc.output()
 
+# --------------------------------------------------
+# SERVAL Fault Injection Test
+# --------------------------------------------------
+
+from Sensors.FaultInjection import FaultInjector
+
+# Create a fault injector for testing
+test_injector = FaultInjector()
+
+# Inject an IMU X-axis spike at 10 seconds
+test_injector.add_fault(
+    sensor="IMU",
+    fault_type="spike",
+    start_time=10.0,
+    duration=0.1,
+    magnitude=0.5,
+    axis=0,
+    field="AngVelPlatform"
+)
+
+# Get original IMU measurements
+imu_original = out["imu"]["IMU"]
+
+# Create storage for faulty measurements
+imu_faulty = {
+    key: np.array(value, copy=True)
+    for key, value in imu_original.items()
+}
+
+# Apply the fault to every recorded timestep
+num_samples = len(imu_original["AngVelPlatform"])
+
+for i in range(num_samples):
+
+    current_time = i * samp
+
+    # Get one timestep of IMU measurements
+    measurement = {
+        key: np.array(value[i], copy=True)
+        for key, value in imu_original.items()
+    }
+
+    # Inject the fault
+    faulty_measurement = test_injector.inject_imu(
+        measurement,
+        current_time,
+        sensor_name="IMU"
+    )
+
+    # Store the corrupted measurement
+    for key in imu_faulty:
+        imu_faulty[key][i] = faulty_measurement[key]
+
+# Compare original and faulty IMU X-axis
+time_array = np.arange(num_samples) * samp
+
+plt.figure(figsize=(12, 5))
+
+plt.plot(
+    time_array,
+    imu_original["AngVelPlatform"][:, 0],
+    label="Original IMU X",
+    linewidth=2
+)
+
+plt.plot(
+    time_array,
+    imu_faulty["AngVelPlatform"][:, 0],
+    label="Faulty IMU X",
+    linestyle="--"
+)
+
+plt.xlim(9.5, 10.5)
+plt.xlabel("Time [s]")
+plt.ylabel("Angular Velocity [rad/s]")
+plt.title("SERVAL IMU Transient Spike Injection")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+#uwu
+
 #vvvvvv everything else is just diagnostics and plotting below vvvvvv
 ##region plotting
 for line in out:
