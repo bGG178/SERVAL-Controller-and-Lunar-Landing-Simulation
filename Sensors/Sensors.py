@@ -11,6 +11,9 @@ class SensorsManager:
         self.sampling_ns = sampling_ns   #how often to sample sensors in ns
 
         self.vehicle = Vehicle                              #Holds the vehicle class for assigning tasks and models
+        
+        #Initialize sensor fault Injection (added by Michelle)
+        self.fault_injector = create_default_faults()
 
     def add_imu(self, name, sc_state_msg, config=None):
         """
@@ -97,4 +100,40 @@ class SensorsManager:
             "imu": {name: imu.output(index) for name, imu in self.vehicle.imus.items()},                #IMU Logging and Output
             "star_tracker": {name: st.output(index) for name, st in self.vehicle.star_trackers.items()} #ST Logging and Output
             }
+        
+    # --------------------------------------------------
+    # Fault Injection Sensor Output (added by Michelle)
+    # --------------------------------------------------
+
+    def output_with_faults(self, index, time):
+
+        # Get original sensor measurements
+        sensor_data = self.output(index)
+
+        # Inject faults into IMU measurements
+        for name, imu_data in sensor_data["imu"].items():
+
+            sensor_data["imu"][name] = (
+                self.fault_injector.inject_imu(
+                    imu_data,
+                    time,
+                    sensor_name=name
+                )
+            )
+
+        # Inject faults into star tracker measurements
+        for name, star_data in sensor_data["star_tracker"].items():
+
+            sensor_data["star_tracker"][name] = (
+                self.fault_injector.inject_star_tracker(
+                    star_data,
+                    time,
+                    sensor_name=name
+                )
+            )
+
+        # Return modified sensor measurements
+        return sensor_data
+
+
 
