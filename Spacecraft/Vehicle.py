@@ -2,6 +2,7 @@ from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, unitTest
 from Basilisk.simulation import spacecraft, extForceTorque
 from Spacecraft.Mujoco import MujocoPhysicsEngine as MPE
 from Spacecraft.Thrusters.DummyController import DummyController
+from FDIR.ModelPredictor import ModelPredictor
 
 class Vehicle:
     def __init__(self, sim, name, sampling_ns, spacecraft_attitude_MRP, spacecraft_attitude_rate, spacecraft_mass, spacecraft_inertia):
@@ -24,6 +25,8 @@ class Vehicle:
         self.lander.hub.omega_BN_BInit = spacecraft_attitude_rate
         self.lander.hub.mHub = spacecraft_mass  # CoM currently undefined to my knowledge
         self.lander.hub.IHubPntBc_B = spacecraft_inertia
+        #Initialize model-based angular velocity predictor for FDIR
+        self.model_predictor = ModelPredictor(spacecraft_inertia, spacecraft_attitude_rate)
 
 
 

@@ -144,6 +144,23 @@ sim.ExecuteSimulation()
 
 out = sc.output()
 
+#--------------------------------------------------
+#FDIR Model Predictor Test
+from FDIR.ModelPredictor import ModelPredictor
+
+predictor = ModelPredictor(
+    inertia=spacecraft_inertia,
+    initial_omega=spacecraft_attitude_rate
+)
+
+torque = predictor.calculate_thruster_torque(
+    engines=sc.engines,
+    enabled_engines=CONSTANT_ON_ENGINES
+)
+
+print("Predicted thruster torque:", torque)
+#----------------------------------------------------
+
 # --------------------------------------------------
 # SERVAL Fault Injection Test
 # --------------------------------------------------
